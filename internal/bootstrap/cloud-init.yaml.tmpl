@@ -16,12 +16,23 @@ packages:
 # the private VPC subnet, so plain HTTP/2 cleartext is acceptable.
 groups:
   - fjb
+{{- end}}
+{{- if or .FJBAgentDownloadURL .AuthorizedKey}}
 users:
+{{- if .AuthorizedKey}}
+  - name: {{.SSHUser}}
+    ssh_authorized_keys:
+      - {{.AuthorizedKey}}
+{{- end}}
+{{- if .FJBAgentDownloadURL}}
   - name: fjb
     system: true
     no_create_home: true
     shell: /usr/sbin/nologin
     primary_group: fjb
+{{- end}}
+{{- end}}
+{{- if .FJBAgentDownloadURL}}
 write_files:
   - path: /etc/fjbagent/auth.token
     permissions: '0600'

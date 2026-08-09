@@ -12,6 +12,8 @@ is the map of how they fit together.
 | [`forgejo`](forgejo) | REST client: poll waiting jobs, mint ephemeral runner registrations. |
 | [`provider`](provider) | The `Provider` interface + name registry, and `BillingModel`. |
 | [`provider/linode`](provider/linode) | Linode implementation (hourly-round-up billing). |
+| [`provider/proxmox`](provider/proxmox) | Proxmox VE QEMU clone implementation. |
+| [`provider/libvirt`](provider/libvirt) | Local or remote libvirt/KVM implementation through `virsh`. |
 | [`provider/mock`](provider/mock) | Test double for `Provider`. |
 | [`bootstrap`](bootstrap) | Provider-agnostic cloud-init for workers (embedded; amd64/arm64). |
 | [`orchestrator`](orchestrator) | Pool + node state machine, reconcile loop, billing-aware teardown, SSH dispatch. |
@@ -32,10 +34,11 @@ Each tick the orchestrator:
    `bootstrap` cloud-init) bounded by `scale.max`;
 4. for a dispatch, mints an ephemeral registration (`forgejo.RegisterEphemeral`)
    and runs `forgejo-runner one-job` on the VM over SSH;
-5. applies the teardown policy chosen from the provider's `BillingModel`.
+5. destroys a disposable worker immediately after dispatch, or applies the
+   provider billing policy to reusable idle workers.
 
 ```
-config ──▶ cmd/fj-bellows ──▶ orchestrator ──┬─▶ provider (linode)
+config ──▶ cmd/fj-bellows ──▶ orchestrator ──┬─▶ provider (linode/proxmox/libvirt)
                                               ├─▶ forgejo  (jobs + registrations)
                                               ├─▶ bootstrap (cloud-init)
                                               └─▶ Dispatcher (SSH one-job)

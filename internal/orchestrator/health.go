@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"context"
 	"time"
+
+	"github.com/hstern/fj-bellows/internal/provider"
 )
 
 // HealthStatus is the orchestrator's view of its own readiness. The control
@@ -122,7 +124,13 @@ const TransportModeCacheGateway = "cache-gateway"
 // composition-root concern, not a per-node property.
 func (o *Orchestrator) addrFor(n *Node) string {
 	if o.cfg.TransportMode == TransportModeCacheGateway {
+		if n.PrivateAddress != "" {
+			return n.PrivateAddress
+		}
 		return n.VPCIP
+	}
+	if n.Address != "" {
+		return n.Address
 	}
 	return n.IP
 }
@@ -130,11 +138,11 @@ func (o *Orchestrator) addrFor(n *Node) string {
 // addrForInstance is the just-provisioned counterpart of addrFor when
 // the caller has a provider.Instance in hand but hasn't yet retrieved
 // the Node from the pool. Same selection rule.
-func (o *Orchestrator) addrForInstance(ip4, vpcIP string) string {
+func (o *Orchestrator) addrForInstance(inst provider.Instance) string {
 	if o.cfg.TransportMode == TransportModeCacheGateway {
-		return vpcIP
+		return inst.PrivateDialAddress()
 	}
-	return ip4
+	return inst.DialAddress()
 }
 
 func (o *Orchestrator) markTick() {

@@ -136,6 +136,10 @@ repo, not in-tree). `//nolint` directives must name the linter and give a reason
   (don't punish a working deployment for a transient network blip).
 - **Scale-to-N architecture; do not hardcode the single-VM assumption.**
   `scale.max` bounds it (default 1).
+- **Disposable lifecycle never reuses uncertain state.** In
+  `worker_lifecycle: disposable`, every dispatch outcome destroys its worker,
+  failed deletion remains non-dispatchable and retries, and workers discovered
+  after a daemon restart are reaped rather than adopted as idle.
 - **A deployment owns instances solely by `cfg.Tag`.** `provider.List(tag)` is
   the entire world the reconcile/orphan-sweep acts on. Multiple deployments on
   one cloud account MUST use distinct tags or they destroy each other's VMs; the

@@ -56,6 +56,11 @@ type Params struct {
 	// dial is verified, eliminating the trust-on-first-use window. When empty the
 	// worker keeps the host key cloud-init generates on its own.
 	HostPrivateKey string
+	// AuthorizedKey is installed for SSHUser so providers whose native API
+	// cannot inject an SSH key can use the same provider-agnostic user data.
+	AuthorizedKey string
+	// SSHUser receives AuthorizedKey. Defaults to root.
+	SSHUser string
 
 	// FJBAgentDownloadURL is the fully-resolved URL the worker fetches the
 	// fjbagent binary from. Use ResolveAgentDownloadURL to substitute the
@@ -79,6 +84,9 @@ func Render(p Params) (string, error) {
 	}
 	if p.ReadyFile == "" {
 		p.ReadyFile = DefaultReadyFile
+	}
+	if p.SSHUser == "" {
+		p.SSHUser = "root"
 	}
 	if p.FJBAgentDownloadURL != "" && p.FJBAgentToken == "" {
 		return "", errors.New("bootstrap: FJBAgentToken is required when FJBAgentDownloadURL is set")

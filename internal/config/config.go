@@ -19,6 +19,10 @@ type Config struct {
 	Forgejo Forgejo `yaml:"forgejo"`
 	Scale   Scale   `yaml:"scale"`
 
+	// WorkerLifecycle selects whether a worker may serve multiple sequential
+	// jobs or is destroyed after its first dispatch attempt.
+	WorkerLifecycle string `yaml:"worker_lifecycle"`
+
 	// Provider names the registered provider implementation, e.g. "linode".
 	Provider string `yaml:"provider"`
 
@@ -115,12 +119,23 @@ func Load(path string) (*Config, error) {
 // and destroy each other's VMs. Set a unique tag per deployment.
 const DefaultTag = "fj-bellows"
 
+const (
+	// WorkerLifecycleReusable preserves the warm-pool behaviour.
+	WorkerLifecycleReusable = "reusable"
+	// WorkerLifecycleDisposable gives each job a fresh VM and destroys it after
+	// every dispatch outcome.
+	WorkerLifecycleDisposable = "disposable"
+)
+
 func (c *Config) applyDefaults() {
 	if c.Tag == "" {
 		c.Tag = DefaultTag
 	}
 	if c.Scale.Max == 0 {
 		c.Scale.Max = 1
+	}
+	if c.WorkerLifecycle == "" {
+		c.WorkerLifecycle = WorkerLifecycleReusable
 	}
 	if c.Poll.Interval == 0 {
 		c.Poll.Interval = Duration(10 * time.Second)
@@ -168,6 +183,14 @@ func (c *Config) validate() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("config: missing required fields: %s", strings.Join(missing, ", "))
+	}
+	if c.WorkerLifecycle != WorkerLifecycleReusable && c.WorkerLifecycle != WorkerLifecycleDisposable {
+		return fmt.Errorf(
+			"config: worker_lifecycle must be %q or %q, got %q",
+			WorkerLifecycleReusable,
+			WorkerLifecycleDisposable,
+			c.WorkerLifecycle,
+		)
 	}
 	if err := c.Transport.validate(); err != nil {
 		return fmt.Errorf("config: %w", err)

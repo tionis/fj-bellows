@@ -49,6 +49,9 @@ ssh:
 	if cfg.Scale.Max != 1 {
 		t.Errorf("default max = %d", cfg.Scale.Max)
 	}
+	if cfg.WorkerLifecycle != WorkerLifecycleReusable {
+		t.Errorf("default worker_lifecycle = %q", cfg.WorkerLifecycle)
+	}
 	if cfg.Poll.Interval.D() != 10*time.Second {
 		t.Errorf("default interval = %s", cfg.Poll.Interval.D())
 	}
@@ -69,6 +72,34 @@ ssh:
 	}
 	if pc.Region != "example-region" || pc.Type != "example-type" {
 		t.Errorf("provider_config = %+v", pc)
+	}
+}
+
+func TestLoadDisposableWorkerLifecycle(t *testing.T) {
+	path := writeTemp(t, "config.yaml", `
+forgejo: {url: u, token: t, scope: orgs/x}
+provider: linode
+worker_lifecycle: disposable
+ssh: {private_key_file: k}
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkerLifecycle != WorkerLifecycleDisposable {
+		t.Errorf("worker_lifecycle = %q", cfg.WorkerLifecycle)
+	}
+}
+
+func TestLoadRejectsUnknownWorkerLifecycle(t *testing.T) {
+	path := writeTemp(t, "config.yaml", `
+forgejo: {url: u, token: t, scope: orgs/x}
+provider: linode
+worker_lifecycle: sometimes
+ssh: {private_key_file: k}
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected invalid worker_lifecycle error")
 	}
 }
 

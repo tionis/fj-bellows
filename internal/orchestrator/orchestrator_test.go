@@ -97,6 +97,46 @@ func TestReconcileDispatchesToIdleNode(t *testing.T) {
 	}
 }
 
+func TestDisposableWorkerDestroyedAfterJob(t *testing.T) {
+	prov := &pmock.Provider{
+		ListFn: func(context.Context, string) ([]provider.Instance, error) {
+			return []provider.Instance{{ID: "disposable-1", Address: testIP}}, nil
+		},
+	}
+	jobs := &omock.JobSource{
+		WaitingJobsFn: func(context.Context) ([]forgejo.WaitingJob, error) {
+			return []forgejo.WaitingJob{{Handle: "h1", Labels: []string{labelUbuntu}}}, nil
+		},
+	}
+	cfg := baseConfig()
+	cfg.WorkerLifecycle = workerLifecycleDisposable
+	o := New(cfg, prov, jobs, &omock.Dispatcher{}, nil)
+	o.pool.Put(&Node{InstanceID: "disposable-1", State: StateIdle, Address: testIP})
+
+	o.Reconcile(context.Background())
+
+	waitFor(t, "disposable worker destroyed", func() bool {
+		return prov.DestroyCount() == 1 && o.pool.Len() == 0
+	})
+}
+
+func TestDisposableWorkerDoesNotAdoptUnknownAsIdle(t *testing.T) {
+	prov := &pmock.Provider{
+		ListFn: func(context.Context, string) ([]provider.Instance, error) {
+			return []provider.Instance{{ID: "unknown-1", Address: testIP}}, nil
+		},
+	}
+	cfg := baseConfig()
+	cfg.WorkerLifecycle = workerLifecycleDisposable
+	o := New(cfg, prov, &omock.JobSource{}, &omock.Dispatcher{}, nil)
+
+	o.Reconcile(context.Background())
+
+	waitFor(t, "unknown disposable worker reaped", func() bool {
+		return prov.DestroyCount() == 1 && o.pool.Len() == 0
+	})
+}
+
 func TestReconcileRespectsMaxScale(t *testing.T) {
 	prov := &pmock.Provider{
 		ProvisionFn: func(_ context.Context, _ provider.Spec) (provider.Instance, error) {

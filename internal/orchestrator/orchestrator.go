@@ -40,14 +40,18 @@ type JobSource interface {
 // Config holds the orchestrator's runtime parameters, decoupled from the
 // on-disk config struct.
 type Config struct {
-	Tag           string
-	MaxScale      int
-	Labels        []string
-	PollInterval  time.Duration
-	RunnerVersion string
-	ReadyFile     string
-	Teardown      TeardownPolicy
-	AuthorizedKey string
+	Tag      string
+	MaxScale int
+	Labels   []string
+	// WorkerLifecycle is "reusable" (warm pool) or "disposable" (one VM
+	// dispatch attempt, then destroy). Empty preserves reusable behaviour.
+	WorkerLifecycle string
+	PollInterval    time.Duration
+	RunnerVersion   string
+	ReadyFile       string
+	Teardown        TeardownPolicy
+	AuthorizedKey   string
+	SSHUser         string
 
 	// FJBAgentDownloadURL is the fully-resolved URL workers fetch fjbagent
 	// from in cloud-init (FJB-94). The agent version implicitly tracks
@@ -77,6 +81,8 @@ type Config struct {
 	// warm VMs for a restarted daemon to readopt; set true for a permanent stop.
 	DestroyOnExit bool
 }
+
+const workerLifecycleDisposable = "disposable"
 
 // Orchestrator wires the pool, provider, job source, and dispatcher together.
 type Orchestrator struct {
@@ -489,6 +495,8 @@ func (o *Orchestrator) doForceProvision(ctx context.Context) forceResult {
 		RunnerVersion:       o.cfg.RunnerVersion,
 		ReadyFile:           o.cfg.ReadyFile,
 		HostPrivateKey:      hostPriv,
+		AuthorizedKey:       o.cfg.AuthorizedKey,
+		SSHUser:             o.cfg.SSHUser,
 		FJBAgentDownloadURL: o.cfg.FJBAgentDownloadURL,
 		FJBAgentToken:       o.cfg.FJBAgentToken,
 	})
@@ -509,26 +517,32 @@ func (o *Orchestrator) doForceProvision(ctx context.Context) forceResult {
 		return forceResult{err: fmt.Errorf("provision: %w", err)}
 	}
 	o.pool.Put(&Node{
-		InstanceID: inst.ID,
-		State:      StateProvisioning,
-		IP:         inst.IPv4,
-		CreatedAt:  inst.CreatedAt,
-		LastBusy:   o.now(),
+		InstanceID:     inst.ID,
+		State:          StateProvisioning,
+		Address:        inst.DialAddress(),
+		PrivateAddress: inst.PrivateDialAddress(),
+		IP:             inst.DialAddress(),
+		VPCIP:          inst.PrivateDialAddress(),
+		CreatedAt:      inst.CreatedAt,
+		LastBusy:       o.now(),
 	})
-	o.log.Info("force-provisioned", "id", inst.ID, "ip", inst.IPv4)
-	o.emit("worker_provisioned", map[string]string{attrID: inst.ID, attrIP: inst.IPv4})
+	o.log.Info("force-provisioned", "id", inst.ID, "ip", inst.DialAddress())
+	o.emit("worker_provisioned", map[string]string{attrID: inst.ID, attrIP: inst.DialAddress()})
 
 	// Seed the pinned host key before the first dial so WaitReady's
 	// handshake is verified, then push WaitReady off the reconcile
 	// goroutine — identical to the in-band provisionOne path.
 	if canPin {
-		pinner.PinHostKey(inst.IPv4, sshHostPub)
+		pinner.PinHostKey(inst.DialAddress(), sshHostPub)
 	}
-	id, ip := inst.ID, inst.IPv4
-	dialAddr := o.addrForInstance(inst.IPv4, inst.VPCIPv4)
+	id, ip := inst.ID, inst.DialAddress()
+	dialAddr := o.addrForInstance(inst)
 	o.wg.Go(func() {
 		if err := o.disp.WaitReady(ctx, id, dialAddr); err != nil {
 			o.log.Error("force-provision worker readiness", "id", id, "err", err)
+			if o.disposableWorkers() {
+				o.destroyDisposable(id, ip)
+			}
 			return // teardown / orphan sweep will reclaim it
 		}
 		o.pool.SetState(id, StateIdle)
@@ -584,16 +598,24 @@ func (o *Orchestrator) syncPool(insts []provider.Instance) (adopted, dropped int
 	for _, in := range insts {
 		seen[in.ID] = struct{}{}
 		if _, ok := o.pool.Get(in.ID); !ok {
+			state := StateIdle
+			if o.disposableWorkers() {
+				// After a restart we cannot prove whether an unknown worker has
+				// already run untrusted code. Never reuse it in disposable mode.
+				state = StateDraining
+			}
 			o.pool.Put(&Node{
-				InstanceID: in.ID,
-				State:      StateIdle, // adopt as warm; readiness re-confirmed on dispatch
-				IP:         in.IPv4,
-				VPCIP:      in.VPCIPv4,
-				CreatedAt:  in.CreatedAt,
-				LastBusy:   now,
+				InstanceID:     in.ID,
+				State:          state,
+				Address:        in.DialAddress(),
+				PrivateAddress: in.PrivateDialAddress(),
+				IP:             in.DialAddress(),
+				VPCIP:          in.PrivateDialAddress(),
+				CreatedAt:      in.CreatedAt,
+				LastBusy:       now,
 			})
-			o.log.Info("adopted orphan instance", "id", in.ID, "ip", in.IPv4)
-			o.emit("worker_adopted", map[string]string{attrID: in.ID, attrIP: in.IPv4})
+			o.log.Info("adopted orphan instance", "id", in.ID, "ip", in.DialAddress())
+			o.emit("worker_adopted", map[string]string{attrID: in.ID, attrIP: in.DialAddress()})
 			adopted++
 		}
 	}
@@ -669,10 +691,14 @@ func (o *Orchestrator) dispatch(ctx context.Context, node Node, job forgejo.Wait
 	o.emit("worker_busy", map[string]string{attrID: node.InstanceID, attrIP: node.IP, attrHandle: job.Handle})
 	o.wg.Go(func() {
 		defer func() {
-			o.pool.SetState(node.InstanceID, StateIdle)
 			o.pool.SetJob(node.InstanceID, "")
-			o.pool.Touch(node.InstanceID, o.now())
 			o.unmarkDispatching(job.Handle)
+			if o.disposableWorkers() {
+				o.destroyDisposable(node.InstanceID, node.IP)
+				return
+			}
+			o.pool.SetState(node.InstanceID, StateIdle)
+			o.pool.Touch(node.InstanceID, o.now())
 			o.emit("worker_idle", map[string]string{attrID: node.InstanceID, attrIP: node.IP})
 		}()
 		name := o.cfg.Tag + "-" + shortID()
@@ -721,6 +747,8 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 			RunnerVersion:       o.cfg.RunnerVersion,
 			ReadyFile:           o.cfg.ReadyFile,
 			HostPrivateKey:      hostPriv,
+			AuthorizedKey:       o.cfg.AuthorizedKey,
+			SSHUser:             o.cfg.SSHUser,
 			FJBAgentDownloadURL: o.cfg.FJBAgentDownloadURL,
 			FJBAgentToken:       o.cfg.FJBAgentToken,
 		})
@@ -743,29 +771,34 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 			return
 		}
 		o.pool.Put(&Node{
-			InstanceID: inst.ID,
-			State:      StateProvisioning,
-			IP:         inst.IPv4,
-			VPCIP:      inst.VPCIPv4,
-			CreatedAt:  inst.CreatedAt,
-			LastBusy:   o.now(),
+			InstanceID:     inst.ID,
+			State:          StateProvisioning,
+			Address:        inst.DialAddress(),
+			PrivateAddress: inst.PrivateDialAddress(),
+			IP:             inst.DialAddress(),
+			VPCIP:          inst.PrivateDialAddress(),
+			CreatedAt:      inst.CreatedAt,
+			LastBusy:       o.now(),
 		})
 		o.decPending() // now counted via the pool
-		o.log.Info("provisioned", "id", inst.ID, "ip", inst.IPv4)
-		o.emit("worker_provisioned", map[string]string{attrID: inst.ID, attrIP: inst.IPv4})
+		o.log.Info("provisioned", "id", inst.ID, "ip", inst.DialAddress())
+		o.emit("worker_provisioned", map[string]string{attrID: inst.ID, attrIP: inst.DialAddress()})
 
 		// Seed the pin before the first dial so WaitReady's handshake is verified.
 		if canPin {
-			pinner.PinHostKey(inst.IPv4, sshHostPub)
+			pinner.PinHostKey(inst.DialAddress(), sshHostPub)
 		}
 
-		if err := o.disp.WaitReady(ctx, inst.ID, o.addrForInstance(inst.IPv4, inst.VPCIPv4)); err != nil {
+		if err := o.disp.WaitReady(ctx, inst.ID, o.addrForInstance(inst)); err != nil {
 			o.log.Error("worker readiness", "id", inst.ID, "err", err)
-			return // leave it; teardown/orphan sweep will reclaim it
+			if o.disposableWorkers() {
+				o.destroyDisposable(inst.ID, inst.DialAddress())
+			}
+			return
 		}
 		o.pool.SetState(inst.ID, StateIdle)
 		o.log.Info("worker ready", "id", inst.ID)
-		o.emit("worker_ready", map[string]string{attrID: inst.ID, attrIP: inst.IPv4})
+		o.emit("worker_ready", map[string]string{attrID: inst.ID, attrIP: inst.DialAddress()})
 	})
 }
 
@@ -775,6 +808,13 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 func (o *Orchestrator) applyTeardown(ctx context.Context) int {
 	now := o.now()
 	reaped := 0
+	for _, n := range o.pool.ByState(StateDraining) {
+		if !o.pool.SetState(n.InstanceID, StateRemoving) {
+			continue
+		}
+		reaped++
+		o.reapAsync(ctx, n)
+	}
 	for _, n := range o.pool.ByState(StateIdle) {
 		if !o.cfg.Teardown.ShouldTeardown(n, now) {
 			continue
@@ -782,21 +822,49 @@ func (o *Orchestrator) applyTeardown(ctx context.Context) int {
 		if !o.pool.SetState(n.InstanceID, StateRemoving) {
 			continue
 		}
-		id := n.InstanceID
-		ip := n.IP
 		reaped++
-		o.wg.Go(func() {
-			if err := o.prov.Destroy(ctx, id); err != nil {
-				o.log.Error("destroy", "id", id, "err", err)
-				o.pool.SetState(id, StateIdle) // retry next tick
-				return
-			}
-			o.pool.Delete(id)
-			o.log.Info("destroyed idle node", "id", id)
-			o.emit("worker_reaped", map[string]string{attrID: id, attrIP: ip})
-		})
+		o.reapAsync(ctx, n)
 	}
 	return reaped
+}
+
+func (o *Orchestrator) disposableWorkers() bool {
+	return o.cfg.WorkerLifecycle == workerLifecycleDisposable
+}
+
+// destroyDisposable tears down a worker with a fresh context so cancellation
+// of the job cannot suppress security cleanup. Failed deletion leaves the node
+// draining; applyTeardown retries it on the next reconcile without making it
+// dispatchable again.
+func (o *Orchestrator) destroyDisposable(id, ip string) {
+	o.pool.SetState(id, StateRemoving)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := o.prov.Destroy(ctx, id); err != nil {
+		o.log.Error("destroy disposable worker", "id", id, "err", err)
+		o.pool.SetState(id, StateDraining)
+		return
+	}
+	o.pool.Delete(id)
+	o.log.Info("destroyed disposable worker", "id", id)
+	o.emit("worker_reaped", map[string]string{attrID: id, attrIP: ip})
+}
+
+func (o *Orchestrator) reapAsync(ctx context.Context, n Node) {
+	o.wg.Go(func() {
+		if err := o.prov.Destroy(ctx, n.InstanceID); err != nil {
+			o.log.Error("destroy", "id", n.InstanceID, "err", err)
+			if o.disposableWorkers() {
+				o.pool.SetState(n.InstanceID, StateDraining)
+			} else {
+				o.pool.SetState(n.InstanceID, StateIdle)
+			}
+			return
+		}
+		o.pool.Delete(n.InstanceID)
+		o.log.Info("destroyed worker", "id", n.InstanceID)
+		o.emit("worker_reaped", map[string]string{attrID: n.InstanceID, attrIP: n.IP})
+	})
 }
 
 func (o *Orchestrator) incPending() {

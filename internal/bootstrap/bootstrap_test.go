@@ -37,6 +37,22 @@ func TestRenderCustomReadyFile(t *testing.T) {
 	}
 }
 
+func TestRenderAuthorizedKey(t *testing.T) {
+	out, err := Render(Params{
+		RunnerVersion: testRunnerVersion,
+		AuthorizedKey: "ssh-ed25519 AAAATEST",
+		SSHUser:       "ci",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"name: ci", "ssh_authorized_keys:", "ssh-ed25519 AAAATEST"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderRequiresVersion(t *testing.T) {
 	if _, err := Render(Params{}); err == nil {
 		t.Fatal("expected error for missing RunnerVersion")

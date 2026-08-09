@@ -19,16 +19,17 @@ const redactedMarker = "<redacted>"
 //
 // The list is intentionally conservative: every cloud provider's SDK
 // already documents the conventional names for credential fields, and these
-// cover the in-tree providers (Linode's `token`, anything we plumb later
-// that uses `api_key`/`secret_key`).
+// cover the in-tree providers (Linode's `token`, Proxmox's `token_secret`,
+// and anything we plumb later that uses `api_key`/`secret_key`).
 var secretKeyNames = map[string]struct{}{
-	"token":      {},
-	"password":   {},
-	"secret":     {},
-	"key":        {},
-	"api_key":    {},
-	"access_key": {},
-	"secret_key": {},
+	"token":        {},
+	"token_secret": {},
+	"password":     {},
+	"secret":       {},
+	"key":          {},
+	"api_key":      {},
+	"access_key":   {},
+	"secret_key":   {},
 }
 
 // Redact returns a copy of cfg with every secret-bearing field zeroed out

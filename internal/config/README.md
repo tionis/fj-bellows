@@ -13,8 +13,10 @@ referenced by **path** (`ssh.private_key_file`) rather than inlined, to keep the
 file tidy.
 
 `Duration` is a thin wrapper over `time.Duration` that unmarshals from strings
-like `10s` / `5m`. `Load` applies defaults (tag, max scale, poll interval, idle
-timeout, hour margin, SSH user/port) and validates required fields.
+like `10s` / `5m`. `Load` applies defaults (tag, max scale, reusable worker
+lifecycle, poll interval, idle timeout, hour margin, SSH user/port) and
+validates required fields. Set `worker_lifecycle: disposable` to destroy a
+worker after its first dispatch attempt and refuse warm adoption after restart.
 
 `Redact(*Config)` returns a copy with secret-bearing fields replaced by
 `<redacted>`, safe to ship over the operator-facing control plane

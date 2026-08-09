@@ -135,11 +135,17 @@ func nonHotFieldDiff(a, b Config) []string {
 	if a.Tag != b.Tag {
 		out = append(out, "tag")
 	}
+	if a.WorkerLifecycle != b.WorkerLifecycle {
+		out = append(out, "worker_lifecycle")
+	}
 	if a.ReadyFile != b.ReadyFile {
 		out = append(out, "ready_file")
 	}
 	if a.AuthorizedKey != b.AuthorizedKey {
 		out = append(out, "ssh.authorized_key")
+	}
+	if a.SSHUser != b.SSHUser {
+		out = append(out, "ssh.user")
 	}
 	if a.Teardown.Model != b.Teardown.Model {
 		out = append(out, "billing_model")

@@ -54,17 +54,44 @@ type Spec struct {
 type Instance struct {
 	ID   string
 	Name string
+	// Address is the provider's preferred SSH dial address. It may be an IPv4
+	// address, an IPv6 address, or a resolvable hostname. New providers should
+	// populate this field.
+	Address string
+	// PrivateAddress is the provider-private dial address used by private
+	// transports. It has the same address-family-neutral semantics as Address.
+	PrivateAddress string
 	// IPv4 is the public IPv4 (the legacy dial address under transport.mode=ssh).
-	// Providers that dispatch by container exec (docker) leave it empty.
+	//
+	// Deprecated: retained for existing providers; use Address in new code.
 	IPv4 string
 	// VPCIPv4 is the VPC-side IPv4 when the provider has VPC attachment
-	// configured; empty otherwise. Under transport.mode=cache-gateway
+	// configured; empty otherwise. Deprecated: use PrivateAddress.
+	// Under transport.mode=cache-gateway
 	// (FJB-54) this is the dial address the orchestrator uses. Population
 	// is provider-specific and may be lazy — providers that can't resolve
 	// it cheaply on List may leave it empty until first needed.
 	VPCIPv4   string
 	CreatedAt time.Time
 	Tag       string
+}
+
+// DialAddress returns the provider's preferred public or routed address,
+// falling back to the legacy IPv4 field for existing providers.
+func (i Instance) DialAddress() string {
+	if i.Address != "" {
+		return i.Address
+	}
+	return i.IPv4
+}
+
+// PrivateDialAddress returns the provider's preferred private address,
+// falling back to the legacy VPCIPv4 field for existing providers.
+func (i Instance) PrivateDialAddress() string {
+	if i.PrivateAddress != "" {
+		return i.PrivateAddress
+	}
+	return i.VPCIPv4
 }
 
 // InfoProvider is the optional surface providers implement to expose

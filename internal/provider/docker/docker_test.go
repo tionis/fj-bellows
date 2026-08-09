@@ -187,8 +187,8 @@ func TestProvisionSendsRunCommand(t *testing.T) {
 	if inst.Tag != "my-tag" {
 		t.Errorf("Tag = %q", inst.Tag)
 	}
-	if inst.IPv4 != "" {
-		t.Errorf("IPv4 should be empty for docker provider, got %q", inst.IPv4)
+	if inst.DialAddress() != "" {
+		t.Errorf("dial address should be empty for docker provider, got %q", inst.DialAddress())
 	}
 	if inst.CreatedAt.IsZero() {
 		t.Error("CreatedAt should be set")

@@ -102,7 +102,9 @@ func TestApplyHotConfig_RejectsNonHot(t *testing.T) {
 	next.Tag = "different-tag"
 	next.ReadyFile = "/run/other"
 	next.AuthorizedKey = "ssh-ed25519 AAA other"
+	next.SSHUser = "other"
 	next.Teardown.Model = provider.BillingHourlyRoundUp
+	next.WorkerLifecycle = "disposable"
 	// Mix in a hot change too: must be rejected wholesale, no partial apply.
 	next.MaxScale = 99
 
@@ -111,7 +113,7 @@ func TestApplyHotConfig_RejectsNonHot(t *testing.T) {
 		t.Fatal("expected error on non-hot field change")
 	}
 	msg := err.Error()
-	for _, want := range []string{"tag", "ready_file", "ssh.authorized_key", "billing_model"} {
+	for _, want := range []string{"tag", "worker_lifecycle", "ready_file", "ssh.authorized_key", "ssh.user", "billing_model"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error message missing %q: %s", want, msg)
 		}

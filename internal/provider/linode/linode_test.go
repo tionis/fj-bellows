@@ -547,7 +547,7 @@ func TestToInstance(t *testing.T) {
 		Tags:    []string{testLabelPrefix},
 	}
 	got := toInstance(in)
-	if got.ID != "42" || got.Name != "fj-bellows-abcd" || got.IPv4 != "203.0.113.7" {
+	if got.ID != "42" || got.Name != "fj-bellows-abcd" || got.DialAddress() != "203.0.113.7" {
 		t.Errorf("toInstance = %+v", got)
 	}
 	if !got.CreatedAt.Equal(created) || got.Tag != testLabelPrefix {

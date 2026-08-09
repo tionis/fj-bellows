@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hstern/fj-bellows/internal/provider"
 )
 
 const (
@@ -148,7 +150,7 @@ func TestAddrForInstance(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {
 			o := &Orchestrator{cfg: Config{TransportMode: tc.mode}}
-			got := o.addrForInstance(tc.ip4, tc.vpcIP)
+			got := o.addrForInstance(provider.Instance{IPv4: tc.ip4, VPCIPv4: tc.vpcIP})
 			if got != tc.want {
 				t.Errorf("addrForInstance(mode=%q, ip4=%q, vpcIP=%q) = %q, want %q",
 					tc.mode, tc.ip4, tc.vpcIP, got, tc.want)

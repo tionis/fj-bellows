@@ -10,6 +10,8 @@ delivers the one-shot token over SSH at dispatch time.
 
 The install step detects the VM architecture (`uname -m`) and fetches the
 matching `forgejo-runner` build, so both amd64 and arm64 workers are supported.
+The orchestrator's public SSH key is also rendered into cloud-init, allowing
+providers without a native authorized-key API to use the same bootstrap.
 
 ```go
 userData, err := bootstrap.Render(bootstrap.Params{RunnerVersion: "12.10.1"})

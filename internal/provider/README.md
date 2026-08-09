@@ -4,7 +4,7 @@ The cloud-provider abstraction and an in-tree registry.
 
 ```go
 type Provider interface {
-    Configure(node yaml.Node) error
+	Configure(ctx context.Context, tag string, node yaml.Node) error
     Provision(ctx context.Context, spec Spec) (Instance, error)
     Destroy(ctx context.Context, id string) error
     List(ctx context.Context, tag string) ([]Instance, error)
@@ -27,4 +27,6 @@ fields.
 the orphan sweep, so a crashed daemon can rebuild its view (and its billing-hour
 timers, via `Instance.CreatedAt`) from it.
 
-Subpackages: [`linode`](linode) (implementation), [`mock`](mock) (test double).
+Provider implementations are [`linode`](linode), [`docker`](docker),
+[`proxmox`](proxmox), and [`libvirt`](libvirt). [`mock`](mock) is the test
+double.

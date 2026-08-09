@@ -25,9 +25,13 @@ const (
 type Node struct {
 	InstanceID string
 	State      NodeState
+	// Address is the provider-preferred public or routed dial address. It may
+	// contain either address family or a hostname.
+	Address string
+	// PrivateAddress is the provider-private dial address.
+	PrivateAddress string
 	// IP is the worker's public IPv4 (the legacy dial address under
-	// transport.mode=ssh). Empty for providers that dispatch by container
-	// exec, and may be empty under future private-only configurations.
+	// transport.mode=ssh). Deprecated: retained for control-plane compatibility.
 	IP string
 	// VPCIP is the worker's IPv4 on the provider VPC, when one is
 	// configured. Empty when no VPC is in use. Under transport.mode=

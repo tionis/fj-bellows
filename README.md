@@ -8,8 +8,9 @@ per-job** runners on it, keeps the VM **warm for the rest of the billing hour
 already paid for**, and tears it down once idle. The teardown policy adapts to
 each cloud's billing model.
 
-Linode is the first provider; AWS/GCP/Azure can drop in behind the same
-in-tree `Provider` interface.
+In-tree providers cover Linode, Proxmox VE, and libvirt/KVM, with Docker as a
+local development backend. Other clouds can drop in behind the same provider
+interface.
 
 ## Why
 
@@ -50,6 +51,9 @@ just cheap on one.
 - **Orphan sweep**: every instance is tagged; instances unknown to the
   orchestrator or idle past their paid hour are destroyed, so a crash or a
   failed DELETE never leaks a billed VM.
+- **Disposable VM mode**: `worker_lifecycle: disposable` destroys the worker
+  after its first dispatch attempt and reaps unknown tagged workers on restart,
+  providing a fresh VM boundary for each untrusted job.
 - **Singleton lock**: an advisory file lock ensures only one daemon makes
   provisioning decisions.
 

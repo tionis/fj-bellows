@@ -93,8 +93,12 @@ generates a per-VM ed25519 host key, injects the private half via cloud-init,
 and pre-pins the public half, so the first dial is already verified (with TOFU
 pinning as a fallback when no key is seeded).
 
-`one-job` is the only ephemeral-capable command. Within-hour VM reuse weakens
-job→job isolation, which is acceptable for trusted single-tenant CI.
+`one-job` is the only ephemeral-capable command. With
+`worker_lifecycle: reusable`, within-hour VM reuse weakens job→job isolation
+and is suitable only for trusted single-tenant CI. With
+`worker_lifecycle: disposable`, every dispatch outcome destroys the VM and
+unknown tagged workers found after a daemon restart are destroyed rather than
+adopted.
 
 ## Worker bootstrap
 

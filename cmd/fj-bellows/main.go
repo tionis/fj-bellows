@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -33,7 +34,9 @@ import (
 
 	// Register in-tree providers.
 	dockerprov "github.com/hstern/fj-bellows/internal/provider/docker"
+	_ "github.com/hstern/fj-bellows/internal/provider/libvirt"
 	linodeprov "github.com/hstern/fj-bellows/internal/provider/linode"
+	_ "github.com/hstern/fj-bellows/internal/provider/proxmox"
 )
 
 func main() {
@@ -405,6 +408,8 @@ func (b *controlBackend) ReloadConfig(_ context.Context) ([]string, error) {
 	next := cur
 	next.MaxScale = newCfg.Scale.Max
 	next.Labels = newCfg.Forgejo.Labels
+	next.WorkerLifecycle = newCfg.WorkerLifecycle
+	next.SSHUser = newCfg.SSH.User
 	next.PollInterval = newCfg.Poll.Interval.D()
 	next.Teardown.IdleTimeout = newCfg.Poll.IdleTimeout.D()
 	next.Teardown.HourMargin = newCfg.Poll.HourMargin.D()
@@ -846,15 +851,22 @@ func buildOrchestratorConfig(cfg *config.Config, opts runOpts, buildVersion, aut
 	if err != nil {
 		return orchestrator.Config{}, err
 	}
+	if cfg.WorkerLifecycle == config.WorkerLifecycleDisposable && fjbAgentToken != "" {
+		return orchestrator.Config{}, errors.New(
+			"fjbagent is incompatible with disposable workers: its deployment-wide token would be exposed to untrusted jobs",
+		)
+	}
 	_ = prov // reserved for Phase C: provider-aware SetFJBAgent wiring lives in its own helper there.
 	return orchestrator.Config{
 		Tag:                 cfg.Tag,
 		MaxScale:            cfg.Scale.Max,
 		Labels:              cfg.Forgejo.Labels,
+		WorkerLifecycle:     cfg.WorkerLifecycle,
 		PollInterval:        cfg.Poll.Interval.D(),
 		RunnerVersion:       opts.runnerVersion,
 		ReadyFile:           bootstrap.DefaultReadyFile,
 		AuthorizedKey:       authKey,
+		SSHUser:             cfg.SSH.User,
 		TransportMode:       cfg.Transport.Mode,
 		FJBAgentDownloadURL: fjbAgentURL,
 		FJBAgentToken:       fjbAgentToken,

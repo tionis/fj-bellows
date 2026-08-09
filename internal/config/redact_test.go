@@ -120,6 +120,7 @@ func TestRedact_AllSecretKeyVariants(t *testing.T) {
 	// without a test won't regress unnoticed.
 	src := `
 token: t1
+token_secret: ts1
 password: p1
 secret: s1
 key: k1
@@ -136,7 +137,7 @@ region: us-east
 	got := Redact(cfg)
 	out, _ := yaml.Marshal(&got.ProviderConfig)
 	s := string(out)
-	for _, leaked := range []string{"t1", "p1", "s1", "k1", "a1", "ak1", "sk1"} {
+	for _, leaked := range []string{"t1", "ts1", "p1", "s1", "k1", "a1", "ak1", "sk1"} {
 		if strings.Contains(s, ": "+leaked+"\n") || strings.HasSuffix(strings.TrimSpace(s), ": "+leaked) {
 			t.Errorf("value %q leaked through:\n%s", leaked, s)
 		}

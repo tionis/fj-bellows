@@ -42,6 +42,11 @@ scale:
   # Maximum number of warm worker VMs.
   max: 1
 
+# Worker VM reuse policy. "reusable" preserves the warm-pool behaviour;
+# "disposable" destroys a worker after its first dispatch attempt and never
+# adopts unknown workers as reusable after a daemon restart.
+worker_lifecycle: reusable
+
 # Selected in-tree provider.
 provider: linode
 
@@ -120,6 +125,37 @@ provider_config:
   #   # type: g6-nanode-1          # bump to g6-standard-1 under burst
   #   # image: linode/debian13
   #   # zot_version: 2.1.7         # pinned; bump deliberately
+
+# === Proxmox VE alternative ===
+# provider: proxmox
+# provider_config:
+#   endpoint: https://pve.example.com:8006
+#   token_id: fj-bellows@pve!workers
+#   token_secret: <proxmox-api-token-secret>
+#   node: pve-node
+#   template_vmid: 9000
+#   storage: local-lvm
+#   snippet_storage: local
+#   network: ciworkers
+#   linked_clone: true
+#   firewall: true
+#   cores: 2
+#   memory_mb: 4096
+#   disk_size: 32G
+
+# === libvirt/KVM alternative ===
+# provider: libvirt
+# provider_config:
+#   uri: qemu:///system
+#   pool: workers
+#   base_volume: debian-cloud-base.qcow2
+#   network: ciworkers
+#   architecture: auto # detects x86_64 or aarch64 through virsh capabilities
+#   # machine: virt    # ARM64 default; override only for a specific hypervisor
+#   # firmware: auto   # ARM64 selects EFI; x86_64 preserves the image default
+#   cores: 2
+#   memory_mb: 4096
+#   disk_size: 32G
 
 poll:
   # How often to reconcile the queue against runners and instances.
