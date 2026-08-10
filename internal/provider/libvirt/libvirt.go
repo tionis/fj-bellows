@@ -18,21 +18,24 @@ import (
 )
 
 const (
-	timeLayout            = time.RFC3339Nano
-	defaultAddressTimeout = 2 * time.Minute
-	defaultPollInterval   = 2 * time.Second
-	architectureAuto      = "auto"
-	architectureAMD64     = "x86_64"
-	architectureARM64     = "aarch64"
-	firmwareAuto          = "auto"
-	firmwareBIOS          = "bios"
-	firmwareEFI           = "efi"
-	defaultVirshBin       = "virsh"
+	timeLayout             = time.RFC3339Nano
+	defaultAddressTimeout  = 2 * time.Minute
+	defaultPollInterval    = 2 * time.Second
+	architectureAuto       = "auto"
+	architectureAMD64      = "x86_64"
+	architectureARM64      = "aarch64"
+	firmwareAuto           = "auto"
+	firmwareBIOS           = "bios"
+	firmwareEFI            = "efi"
+	cpuModeHostModel       = "host-model"
+	cpuModeHostPassthrough = "host-passthrough"
+	defaultVirshBin        = "virsh"
 )
 
 var (
-	safeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
-	nowUTC   = func() time.Time { return time.Now().UTC() }
+	safeName       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+	safeCPUFeature = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+	nowUTC         = func() time.Time { return time.Now().UTC() }
 )
 
 type config struct {
@@ -48,6 +51,9 @@ type config struct {
 	Architecture    string   `yaml:"architecture"`
 	Machine         string   `yaml:"machine"`
 	Firmware        string   `yaml:"firmware"`
+	CPUMode         string   `yaml:"cpu_mode"`
+	CPURequire      []string `yaml:"cpu_require"`
+	CPUDisable      []string `yaml:"cpu_disable"`
 	AddressTimeout  duration `yaml:"address_timeout"`
 	PollInterval    duration `yaml:"poll_interval"`
 }
@@ -116,6 +122,9 @@ func (l *Libvirt) Configure(_ context.Context, tag string, node yaml.Node) error
 	if l.cfg.Firmware == "" {
 		l.cfg.Firmware = firmwareAuto
 	}
+	if l.cfg.CPUMode == "" {
+		l.cfg.CPUMode = cpuModeHostModel
+	}
 	if _, err := normalizeArchitecture(l.cfg.Architecture); err != nil && l.cfg.Architecture != architectureAuto {
 		return err
 	}
@@ -124,6 +133,12 @@ func (l *Libvirt) Configure(_ context.Context, tag string, node yaml.Node) error
 	}
 	if l.cfg.Firmware != firmwareAuto && l.cfg.Firmware != firmwareBIOS && l.cfg.Firmware != firmwareEFI {
 		return fmt.Errorf("libvirt: firmware must be auto, bios, or efi, got %q", l.cfg.Firmware)
+	}
+	if l.cfg.CPUMode != cpuModeHostModel && l.cfg.CPUMode != cpuModeHostPassthrough {
+		return fmt.Errorf("libvirt: cpu_mode must be host-model or host-passthrough, got %q", l.cfg.CPUMode)
+	}
+	if err := validateCPUFeatures(l.cfg.CPURequire, l.cfg.CPUDisable); err != nil {
+		return err
 	}
 	if l.cfg.AddressTimeout == 0 {
 		l.cfg.AddressTimeout = duration(defaultAddressTimeout)
@@ -174,7 +189,8 @@ func (l *Libvirt) Provision(ctx context.Context, spec provider.Spec) (provider.I
 	}
 	domain, err := renderDomain(
 		spec.Name, spec.Tag, rootVolume, rootPath, seedVolume, seedPath,
-		l.cfg.Network, l.cfg.Cores, l.cfg.MemoryMB, platform,
+		l.cfg.Network, l.cfg.Cores, l.cfg.MemoryMB, l.cfg.CPUMode,
+		l.cfg.CPURequire, l.cfg.CPUDisable, platform,
 	)
 	if err != nil {
 		return provider.Instance{}, fmt.Errorf("libvirt: render domain XML: %w", err)
@@ -194,6 +210,22 @@ func (l *Libvirt) Provision(ctx context.Context, spec provider.Spec) (provider.I
 		ID: spec.Name, Name: spec.Name, Address: address,
 		CreatedAt: nowUTC(), Tag: spec.Tag,
 	}, nil
+}
+
+func validateCPUFeatures(required, disabled []string) error {
+	seen := make(map[string]string, len(required)+len(disabled))
+	for policy, features := range map[string][]string{"require": required, "disable": disabled} {
+		for _, feature := range features {
+			if !safeCPUFeature.MatchString(feature) {
+				return fmt.Errorf("libvirt: unsafe CPU feature %q", feature)
+			}
+			if previous, exists := seen[feature]; exists {
+				return fmt.Errorf("libvirt: CPU feature %q has conflicting %s and %s policies", feature, previous, policy)
+			}
+			seen[feature] = policy
+		}
+	}
+	return nil
 }
 
 func safeOptionalName(value string) bool {

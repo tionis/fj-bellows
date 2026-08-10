@@ -41,6 +41,7 @@ func configuredProvider(runner commandRunner) *Libvirt {
 			URI: "qemu:///system", Pool: "workers", BaseVolume: "debian-base.qcow2",
 			Network: "ciworkers", VirshBin: defaultVirshBin, CloudLocalDSBin: "cloud-localds",
 			Cores: 2, MemoryMB: 2048, Architecture: architectureAMD64, Firmware: firmwareAuto,
+			CPUMode:        cpuModeHostPassthrough,
 			AddressTimeout: duration(time.Second), PollInterval: duration(time.Millisecond),
 		},
 		tag: testTag, runner: runner,
@@ -64,7 +65,7 @@ func TestConfigureDefaults(t *testing.T) {
 		t.Fatalf("Configure: %v", err)
 	}
 	if l.cfg.URI != "qemu:///system" || l.cfg.Cores != 2 || l.cfg.MemoryMB != 4096 ||
-		l.cfg.Architecture != architectureAuto || l.cfg.Firmware != firmwareAuto {
+		l.cfg.Architecture != architectureAuto || l.cfg.Firmware != firmwareAuto || l.cfg.CPUMode != cpuModeHostModel {
 		t.Errorf("defaults = %+v", l.cfg)
 	}
 }
@@ -92,7 +93,7 @@ func TestARM64PlatformDiscoveryAndDomain(t *testing.T) { //nolint:gocyclo // one
 	}
 	domainBytes, err := renderDomain(
 		testWorkerName, testTag, "root.qcow2", "/images/root", "seed.iso", "/images/seed",
-		"ciworkers", 2, 2048, platform,
+		"ciworkers", 2, 2048, cpuModeHostPassthrough, nil, nil, platform,
 	)
 	if err != nil {
 		t.Fatalf("renderDomain: %v", err)
@@ -103,6 +104,9 @@ func TestARM64PlatformDiscoveryAndDomain(t *testing.T) { //nolint:gocyclo // one
 	}
 	if domain.OS.Firmware != firmwareEFI || domain.OS.Type.Architecture != architectureARM64 || domain.OS.Type.Machine != "virt" {
 		t.Errorf("domain OS = %+v", domain.OS)
+	}
+	if domain.CPU.Mode != cpuModeHostPassthrough {
+		t.Errorf("domain CPU mode = %q", domain.CPU.Mode)
 	}
 	seed := domain.Devices.Disks[1]
 	if seed.Device != "disk" || seed.Target.Bus != deviceBusVirtio || seed.Target.Dev != "vdb" || seed.ReadOnly == nil {
@@ -178,10 +182,23 @@ func TestProvisionBuildsOwnedDomain(t *testing.T) { //nolint:gocyclo // command 
 func TestListFiltersMetadataAndDestroyUsesRecordedVolumes(t *testing.T) { //nolint:gocyclo // command fake intentionally validates the full ownership lifecycle.
 	domain, err := renderDomain(
 		testWorkerName, testTag, "owned-root.qcow2", "/images/root", "owned-seed.iso", "/images/seed",
-		"ciworkers", 2, 2048, domainPlatform{Architecture: architectureAMD64},
+		"ciworkers", 2, 2048, cpuModeHostModel, []string{"avx", "avx2"}, []string{"vmx"},
+		domainPlatform{Architecture: architectureAMD64},
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var rendered domainXML
+	if err := xml.Unmarshal(domain, &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if rendered.CPU.Mode != cpuModeHostModel || len(rendered.CPU.Features) != 3 {
+		t.Fatalf("CPU policy = %+v", rendered.CPU)
+	}
+	if rendered.CPU.Features[0] != (cpuFeatureXML{Policy: "require", Name: "avx"}) ||
+		rendered.CPU.Features[1] != (cpuFeatureXML{Policy: "require", Name: "avx2"}) ||
+		rendered.CPU.Features[2] != (cpuFeatureXML{Policy: "disable", Name: "vmx"}) {
+		t.Fatalf("CPU features = %+v", rendered.CPU.Features)
 	}
 	runner := &fakeRunner{}
 	runner.run = func(_ []byte, command string, args ...string) ([]byte, error) {

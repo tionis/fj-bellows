@@ -13,9 +13,20 @@ type domainXML struct {
 	Name     string      `xml:"name"`
 	Memory   memoryXML   `xml:"memory"`
 	VCPU     int         `xml:"vcpu"`
+	CPU      cpuXML      `xml:"cpu"`
 	OS       osXML       `xml:"os"`
 	Metadata metadataXML `xml:"metadata"`
 	Devices  devicesXML  `xml:"devices"`
+}
+
+type cpuXML struct {
+	Mode     string          `xml:"mode,attr"`
+	Features []cpuFeatureXML `xml:"feature"`
+}
+
+type cpuFeatureXML struct {
+	Policy string `xml:"policy,attr"`
+	Name   string `xml:"name,attr"`
 }
 
 type memoryXML struct {
@@ -107,7 +118,7 @@ type domainPlatform struct {
 
 func renderDomain(
 	name, tag, rootVolume, rootPath, seedVolume, seedPath, network string,
-	cores, memoryMB int,
+	cores, memoryMB int, cpuMode string, cpuRequire, cpuDisable []string,
 	platform domainPlatform,
 ) ([]byte, error) {
 	seedDevice := diskXML{
@@ -122,11 +133,19 @@ func renderDomain(
 		seedDevice.Device = "disk"
 		seedDevice.Target = targetXML{Dev: "vdb", Bus: deviceBusVirtio}
 	}
+	cpuFeatures := make([]cpuFeatureXML, 0, len(cpuRequire)+len(cpuDisable))
+	for _, feature := range cpuRequire {
+		cpuFeatures = append(cpuFeatures, cpuFeatureXML{Policy: "require", Name: feature})
+	}
+	for _, feature := range cpuDisable {
+		cpuFeatures = append(cpuFeatures, cpuFeatureXML{Policy: "disable", Name: feature})
+	}
 	domain := domainXML{
 		Type:   "kvm",
 		Name:   name,
 		Memory: memoryXML{Unit: "MiB", Value: memoryMB},
 		VCPU:   cores,
+		CPU:    cpuXML{Mode: cpuMode, Features: cpuFeatures},
 		OS: osXML{
 			Firmware: platform.Firmware,
 			Type: osTypeXML{
