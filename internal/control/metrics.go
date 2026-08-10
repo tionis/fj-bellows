@@ -147,7 +147,7 @@ func (c *workerCollector) Collect(ch chan<- prometheus.Metric) {
 // knownStates is the closed set of NodeState values the orchestrator emits.
 // Pre-seeding ensures every scrape shows the full label set rather than
 // disappearing labels between transitions.
-var knownStates = []string{"provisioning", "idle", "busy", "draining", "removing"}
+var knownStates = []string{"provisioning", "idle", "waiting", "busy", "draining", "removing"}
 
 // knownEventTypes is the closed set of event Type slugs the orchestrator
 // emits. Pre-seeding the counter at zero for each so the HELP/TYPE lines
@@ -155,6 +155,8 @@ var knownStates = []string{"provisioning", "idle", "busy", "draining", "removing
 var knownEventTypes = []string{
 	"worker_provisioned",
 	"worker_ready",
+	"worker_provision_failed",
+	"worker_readiness_failed",
 	"worker_busy",
 	"worker_idle",
 	"worker_reaped",
@@ -162,6 +164,10 @@ var knownEventTypes = []string{
 	"worker_dropped",
 	"job_dispatched",
 	"job_complete",
+	"runner_waiting",
+	"runner_registration_failed",
+	"runner_run_failed",
+	"worker_destroy_failed",
 	"zombie_reaped",
 	"reconcile_tick",
 	"stream_opened",

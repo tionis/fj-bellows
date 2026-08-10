@@ -537,6 +537,7 @@ func (o *Orchestrator) doForceProvision(ctx context.Context) forceResult {
 	inst, err := o.prov.Provision(ctx, spec)
 	if err != nil {
 		o.log.Error("force-provision", "err", err)
+		o.emit("worker_provision_failed", nil)
 		return forceResult{err: fmt.Errorf("provision: %w", err)}
 	}
 	o.pool.Put(&Node{
@@ -563,6 +564,7 @@ func (o *Orchestrator) doForceProvision(ctx context.Context) forceResult {
 	o.wg.Go(func() {
 		if err := o.disp.WaitReady(ctx, id, dialAddr); err != nil {
 			o.log.Error("force-provision worker readiness", "id", id, "err", err)
+			o.emit("worker_readiness_failed", map[string]string{attrID: id, attrIP: ip})
 			if o.disposableWorkers() {
 				o.destroyDisposable(id, ip)
 			}
@@ -752,6 +754,7 @@ func (o *Orchestrator) dispatch(ctx context.Context, node Node, job forgejo.Wait
 		reg, err := o.jobs.RegisterEphemeral(ctx, name, o.cfg.Labels)
 		if err != nil {
 			o.log.Error("register ephemeral runner", "err", err)
+			o.emit("runner_registration_failed", map[string]string{attrID: node.InstanceID, attrIP: node.IP})
 			return
 		}
 		o.addActive(reg.UUID)
@@ -759,6 +762,9 @@ func (o *Orchestrator) dispatch(ctx context.Context, node Node, job forgejo.Wait
 		o.emit("job_dispatched", map[string]string{attrID: node.InstanceID, attrIP: node.IP, attrHandle: job.Handle, attrRunnerUUID: reg.UUID})
 		if err := o.disp.RunJob(ctx, node.InstanceID, o.addrFor(&node), reg, job); err != nil {
 			o.log.Error("run job", "handle", job.Handle, "ip", node.IP, "err", err)
+			if ctx.Err() == nil {
+				o.emit("runner_run_failed", map[string]string{attrID: node.InstanceID, attrIP: node.IP, attrHandle: job.Handle})
+			}
 			return
 		}
 		o.log.Info("job complete", "handle", job.Handle, "ip", node.IP)
@@ -815,6 +821,7 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 		inst, err := o.prov.Provision(ctx, spec)
 		if err != nil {
 			o.log.Error("provision", "err", err)
+			o.emit("worker_provision_failed", nil)
 			o.decPending()
 			return
 		}
@@ -839,6 +846,7 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 
 		if err := o.disp.WaitReady(ctx, inst.ID, o.addrForInstance(inst)); err != nil {
 			o.log.Error("worker readiness", "id", inst.ID, "err", err)
+			o.emit("worker_readiness_failed", map[string]string{attrID: inst.ID, attrIP: inst.DialAddress()})
 			if o.disposableWorkers() {
 				o.destroyDisposable(inst.ID, inst.DialAddress())
 			}
@@ -893,6 +901,7 @@ func (o *Orchestrator) startPrewarmRunner(ctx context.Context, node Node) bool {
 		reg, err := o.jobs.RegisterEphemeral(runCtx, name, o.cfg.Labels)
 		if err != nil {
 			o.log.Error("register pre-warmed runner", "slot", slot, "err", err)
+			o.emit("runner_registration_failed", map[string]string{attrID: node.InstanceID, attrIP: node.IP})
 			return
 		}
 		o.setSlotUUID(node.InstanceID, reg.UUID)
@@ -903,6 +912,7 @@ func (o *Orchestrator) startPrewarmRunner(ctx context.Context, node Node) bool {
 		if err := o.disp.RunJob(runCtx, node.InstanceID, o.addrFor(&node), reg, forgejo.WaitingJob{}); err != nil {
 			if runCtx.Err() == nil {
 				o.log.Error("pre-warmed runner", "slot", slot, "ip", node.IP, "err", err)
+				o.emit("runner_run_failed", map[string]string{attrID: node.InstanceID, attrIP: node.IP})
 			}
 			return
 		}
@@ -1041,6 +1051,7 @@ func (o *Orchestrator) destroyDisposable(id, ip string) {
 	defer cancel()
 	if err := o.prov.Destroy(ctx, id); err != nil {
 		o.log.Error("destroy disposable worker", "id", id, "err", err)
+		o.emit("worker_destroy_failed", map[string]string{attrID: id, attrIP: ip})
 		o.pool.SetState(id, StateDraining)
 		return
 	}

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,6 +116,38 @@ func TestReconcilePrewarmsRunnerWithoutWaitingJob(t *testing.T) {
 	})
 	cancel()
 	waitFor(t, "cancelled slot is destroyed", func() bool { return prov.DestroyCount() == 1 })
+}
+
+func TestPrewarmRegistrationFailureEmitsFailureEvent(t *testing.T) {
+	prov := &pmock.Provider{
+		ProvisionFn: func(_ context.Context, _ provider.Spec) (provider.Instance, error) {
+			return provider.Instance{ID: "failed-slot", Address: testIP, CreatedAt: time.Now()}, nil
+		},
+	}
+	jobs := &omock.JobSource{
+		RegisterEphemeralFn: func(context.Context, string, []string) (forgejo.Registration, error) {
+			return forgejo.Registration{}, errors.New("registration unavailable")
+		},
+	}
+	cfg := baseConfig()
+	cfg.WorkerLifecycle = workerLifecycleDisposable
+	cfg.Prewarm = 1
+	o := New(cfg, prov, jobs, &omock.Dispatcher{}, nil)
+	events, cancel := o.Subscribe()
+	defer cancel()
+
+	o.Reconcile(context.Background())
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if event.Type == "runner_registration_failed" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("runner_registration_failed event was not emitted")
+		}
+	}
 }
 
 func TestShutdownCancelsIdlePrewarmRunnerButDrainsBusyRunner(t *testing.T) {

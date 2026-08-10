@@ -38,7 +38,22 @@ func TestMetrics_ExposesPulledGauges(t *testing.T) {
 	mustContain(t, body, `fjb_workers{state="idle"} 1`)
 	mustContain(t, body, `fjb_workers{state="busy"} 2`)
 	mustContain(t, body, `fjb_workers{state="provisioning"} 0`) // pre-seeded
+	mustContain(t, body, `fjb_workers{state="waiting"} 0`)      // pre-seeded
 	mustContain(t, body, `fjb_cache_present 1`)
+}
+
+func TestMetrics_ExposesWaitingWorkers(t *testing.T) {
+	be := &mockctl.Backend{}
+	be.SetHealth(func(context.Context) control.HealthStatus { return control.HealthStatus{Healthy: true} })
+	be.SetPoolSnapshot(func() []control.WorkerView {
+		return []control.WorkerView{{InstanceID: "slot-1", State: "waiting"}}
+	})
+	be.SetCacheStatus(func(context.Context) *control.CacheStatus { return nil })
+
+	hs, _ := newTestServer(t, be)
+	body := scrapeMetrics(t, hs.Client(), hs.URL)
+	mustContain(t, body, `fjb_workers_total 1`)
+	mustContain(t, body, `fjb_workers{state="waiting"} 1`)
 }
 
 func TestMetrics_LastTickAge_NegativeBeforeFirstTick(t *testing.T) {
