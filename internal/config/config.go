@@ -22,6 +22,7 @@ type Config struct {
 	// WorkerLifecycle selects whether a worker may serve multiple sequential
 	// jobs or is destroyed after its first dispatch attempt.
 	WorkerLifecycle string `yaml:"worker_lifecycle"`
+	Worker          Worker `yaml:"worker"`
 
 	// Provider names the registered provider implementation, e.g. "linode".
 	Provider string `yaml:"provider"`
@@ -40,6 +41,15 @@ type Config struct {
 	// Tag is stamped on every provisioned instance so reconcile and the orphan
 	// sweep can find instances this daemon owns.
 	Tag string `yaml:"tag"`
+}
+
+// Worker controls provider-independent guest resources configured by
+// cloud-init. Provider-specific CPU, RAM, and disk sizing remain under
+// provider_config.
+type Worker struct {
+	// SwapMB creates and enables a guest swapfile before the worker readiness
+	// sentinel is written. Zero disables swap creation.
+	SwapMB int `yaml:"swap_mb"`
 }
 
 // Forgejo describes how to reach the Forgejo Actions API.
@@ -191,6 +201,9 @@ func (c *Config) validate() error {
 			WorkerLifecycleDisposable,
 			c.WorkerLifecycle,
 		)
+	}
+	if c.Worker.SwapMB < 0 {
+		return fmt.Errorf("config: worker.swap_mb must be non-negative, got %d", c.Worker.SwapMB)
 	}
 	if err := c.Transport.validate(); err != nil {
 		return fmt.Errorf("config: %w", err)

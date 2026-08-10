@@ -867,6 +867,7 @@ func buildOrchestratorConfig(cfg *config.Config, opts runOpts, buildVersion, aut
 		ReadyFile:           bootstrap.DefaultReadyFile,
 		AuthorizedKey:       authKey,
 		SSHUser:             cfg.SSH.User,
+		SwapMB:              cfg.Worker.SwapMB,
 		TransportMode:       cfg.Transport.Mode,
 		FJBAgentDownloadURL: fjbAgentURL,
 		FJBAgentToken:       fjbAgentToken,

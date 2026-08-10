@@ -21,6 +21,10 @@ groups:
 users:
 {{- if .AuthorizedKey}}
   - name: {{.SSHUser}}
+    groups: docker
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: true
     ssh_authorized_keys:
       - {{.AuthorizedKey}}
 {{- end}}
@@ -56,6 +60,29 @@ write_files:
 {{- end}}
 runcmd:
   - systemctl enable --now docker
+{{- if gt .SwapMB 0}}
+  # Provide bounded overflow for memory-heavy CI steps. This is created before
+  # the readiness sentinel, so a dispatched job never races swap activation.
+  - |
+    set -eu
+    if [ ! -e /swapfile ]; then
+      install -m 0600 /dev/null /swapfile
+      fallocate -l {{.SwapMB}}M /swapfile || dd if=/dev/zero of=/swapfile bs=1M count={{.SwapMB}} status=none
+      chmod 0600 /swapfile
+      mkswap /swapfile
+    fi
+    grep -qF '/swapfile none swap sw 0 0' /etc/fstab || printf '%s\n' '/swapfile none swap sw 0 0' >> /etc/fstab
+    swapon /swapfile
+{{- end}}
+  # The SSH reverse tunnel binds the Forgejo HTTPS port on worker loopback.
+  # Workers are single-tenant and disposable, so allowing their unprivileged
+  # dispatch user to bind low ports does not cross a tenant boundary.
+  - sysctl -w net.ipv4.ip_unprivileged_port_start=0
+  - |
+    set -eu
+    mkdir -p /etc/ssh/sshd_config.d
+    printf 'AllowTcpForwarding remote\n' > /etc/ssh/sshd_config.d/20-fj-bellows-forwarding.conf
+    systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || systemctl restart ssh
 {{- if .HostPrivateKey}}
   # The orchestrator generated this ed25519 host key and pre-pinned its public
   # half, so the dispatcher verifies the worker on the very first SSH dial. The

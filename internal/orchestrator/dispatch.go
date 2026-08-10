@@ -169,10 +169,10 @@ func (d *SSHDispatcher) RunJob(ctx context.Context, _, addr string, reg forgejo.
 	}
 
 	cmd := fmt.Sprintf(
-		"forgejo-runner one-job --url %s --uuid %s --token-url file:/tmp/tok --label %s --handle %s --wait --config /tmp/runner-cfg.yml",
+		"forgejo-runner one-job --url %s --uuid %s --token-url file:/tmp/tok %s --handle %s --wait --config /tmp/runner-cfg.yml",
 		shellQuote(d.ForgejoURL),
 		shellQuote(reg.UUID),
-		shellQuote(strings.Join(d.Labels, ",")),
+		runnerLabelArgs(d.Labels),
 		shellQuote(job.Handle),
 	)
 	if prep := hostsOverrideCommand(target); prep != "" {
@@ -182,6 +182,18 @@ func (d *SSHDispatcher) RunJob(ctx context.Context, _, addr string, reg forgejo.
 		return fmt.Errorf("one-job: %w", err)
 	}
 	return nil
+}
+
+// runnerLabelArgs renders the repeatable --label option expected by
+// forgejo-runner one-job. Passing a comma-joined value is not equivalent:
+// stringArray flags preserve one occurrence as one value, which leaves the
+// ephemeral runner advertising only the first parsed label on Forgejo.
+func runnerLabelArgs(labels []string) string {
+	args := make([]string, 0, len(labels))
+	for _, label := range labels {
+		args = append(args, "--label "+shellQuote(label))
+	}
+	return strings.Join(args, " ")
 }
 
 // runnerConfigYAML returns the forgejo-runner config snippet the dispatcher
@@ -266,7 +278,8 @@ func hostsOverrideCommand(t forgejoTarget) string {
 		return ""
 	}
 	line := "127.0.0.1 " + t.host
-	return "grep -qF " + shellQuote(line) + " /etc/hosts || echo " + shellQuote(line) + " >> /etc/hosts"
+	return "grep -qF " + shellQuote(line) + " /etc/hosts || printf '%s\\n' " +
+		shellQuote(line) + " | sudo tee -a /etc/hosts >/dev/null"
 }
 
 // startReverseTunnel binds 127.0.0.1:port on the worker (via the SSH client's

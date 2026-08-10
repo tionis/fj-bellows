@@ -52,6 +52,7 @@ type Config struct {
 	Teardown        TeardownPolicy
 	AuthorizedKey   string
 	SSHUser         string
+	SwapMB          int
 
 	// FJBAgentDownloadURL is the fully-resolved URL workers fetch fjbagent
 	// from in cloud-init (FJB-94). The agent version implicitly tracks
@@ -497,6 +498,7 @@ func (o *Orchestrator) doForceProvision(ctx context.Context) forceResult {
 		HostPrivateKey:      hostPriv,
 		AuthorizedKey:       o.cfg.AuthorizedKey,
 		SSHUser:             o.cfg.SSHUser,
+		SwapMB:              o.cfg.SwapMB,
 		FJBAgentDownloadURL: o.cfg.FJBAgentDownloadURL,
 		FJBAgentToken:       o.cfg.FJBAgentToken,
 	})
@@ -594,10 +596,20 @@ func (o *Orchestrator) reapZombieRunners(ctx context.Context) {
 // of nodes adopted and dropped this tick.
 func (o *Orchestrator) syncPool(insts []provider.Instance) (adopted, dropped int) {
 	now := o.now()
+	pending := o.pendingCount()
 	seen := map[string]struct{}{}
 	for _, in := range insts {
 		seen[in.ID] = struct{}{}
 		if _, ok := o.pool.Get(in.ID); !ok {
+			// Provision is asynchronous and some providers expose a resource from
+			// List before Provision has finished discovering its address. During
+			// that window the provisioning goroutine has not inserted the node in
+			// the pool yet. Defer unknown-instance adoption until all in-flight
+			// provisions land so disposable mode cannot mistake a VM it is still
+			// creating for a crash orphan and immediately destroy it.
+			if pending > 0 {
+				continue
+			}
 			state := StateIdle
 			if o.disposableWorkers() {
 				// After a restart we cannot prove whether an unknown worker has
@@ -749,6 +761,7 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 			HostPrivateKey:      hostPriv,
 			AuthorizedKey:       o.cfg.AuthorizedKey,
 			SSHUser:             o.cfg.SSHUser,
+			SwapMB:              o.cfg.SwapMB,
 			FJBAgentDownloadURL: o.cfg.FJBAgentDownloadURL,
 			FJBAgentToken:       o.cfg.FJBAgentToken,
 		})

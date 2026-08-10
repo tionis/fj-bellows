@@ -137,6 +137,48 @@ func TestDisposableWorkerDoesNotAdoptUnknownAsIdle(t *testing.T) {
 	})
 }
 
+func TestDisposableWorkerDoesNotReapVisibleInFlightProvision(t *testing.T) {
+	visible := atomic.Bool{}
+	release := make(chan struct{})
+	prov := &pmock.Provider{
+		ProvisionFn: func(_ context.Context, _ provider.Spec) (provider.Instance, error) {
+			visible.Store(true)
+			<-release
+			return provider.Instance{ID: "in-flight-1", Address: testIP}, nil
+		},
+		ListFn: func(context.Context, string) ([]provider.Instance, error) {
+			if visible.Load() {
+				return []provider.Instance{{ID: "in-flight-1"}}, nil
+			}
+			return nil, nil
+		},
+	}
+	jobs := &omock.JobSource{
+		WaitingJobsFn: func(context.Context) ([]forgejo.WaitingJob, error) {
+			return []forgejo.WaitingJob{{Handle: "h1", Labels: []string{labelUbuntu}}}, nil
+		},
+	}
+	cfg := baseConfig()
+	cfg.WorkerLifecycle = workerLifecycleDisposable
+	o := New(cfg, prov, jobs, &omock.Dispatcher{}, nil)
+
+	o.Reconcile(context.Background())
+	waitFor(t, "provider exposes in-flight instance", visible.Load)
+	o.Reconcile(context.Background())
+
+	if got := prov.DestroyCount(); got != 0 {
+		t.Fatalf("DestroyCount = %d, want 0 for an in-flight provision", got)
+	}
+	if got := o.pool.Len(); got != 0 {
+		t.Fatalf("pool length = %d, want 0 until Provision returns", got)
+	}
+
+	close(release)
+	waitFor(t, "in-flight provision lands in pool", func() bool {
+		return o.pool.Len() == 1
+	})
+}
+
 func TestReconcileRespectsMaxScale(t *testing.T) {
 	prov := &pmock.Provider{
 		ProvisionFn: func(_ context.Context, _ provider.Spec) (provider.Instance, error) {

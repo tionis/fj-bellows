@@ -37,6 +37,34 @@ func TestRenderCustomReadyFile(t *testing.T) {
 	}
 }
 
+func TestRenderWorkerSwap(t *testing.T) {
+	out, err := Render(Params{RunnerVersion: testRunnerVersion, SwapMB: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"fallocate -l 4096M /swapfile",
+		"count=4096",
+		"mkswap /swapfile",
+		"swapon /swapfile",
+		"/swapfile none swap sw 0 0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderWithoutWorkerSwap(t *testing.T) {
+	out, err := Render(Params{RunnerVersion: testRunnerVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "swapon /swapfile") {
+		t.Errorf("swap setup rendered when disabled:\n%s", out)
+	}
+}
+
 func TestRenderAuthorizedKey(t *testing.T) {
 	out, err := Render(Params{
 		RunnerVersion: testRunnerVersion,
@@ -46,7 +74,15 @@ func TestRenderAuthorizedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"name: ci", "ssh_authorized_keys:", "ssh-ed25519 AAAATEST"} {
+	for _, want := range []string{
+		"name: ci",
+		"groups: docker",
+		"sudo: ALL=(ALL) NOPASSWD:ALL",
+		"ssh_authorized_keys:",
+		"ssh-ed25519 AAAATEST",
+		"net.ipv4.ip_unprivileged_port_start=0",
+		"AllowTcpForwarding remote",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q:\n%s", want, out)
 		}

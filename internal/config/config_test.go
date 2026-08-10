@@ -38,6 +38,8 @@ provider_config:
   type: example-type
 ssh:
   private_key_file: /tmp/id
+worker:
+  swap_mb: 4096
 `)
 	cfg, err := Load(path)
 	if err != nil {
@@ -61,6 +63,9 @@ ssh:
 	if cfg.SSH.User != "root" || cfg.SSH.Port != 22 {
 		t.Errorf("ssh defaults = %q:%d", cfg.SSH.User, cfg.SSH.Port)
 	}
+	if cfg.Worker.SwapMB != 4096 {
+		t.Errorf("worker swap = %d MiB", cfg.Worker.SwapMB)
+	}
 
 	// provider_config must survive as a decodable node, opaque to core.
 	var pc struct {
@@ -72,6 +77,18 @@ ssh:
 	}
 	if pc.Region != "example-region" || pc.Type != "example-type" {
 		t.Errorf("provider_config = %+v", pc)
+	}
+}
+
+func TestLoadRejectsNegativeWorkerSwap(t *testing.T) {
+	path := writeTemp(t, "config.yaml", `
+forgejo: {url: u, token: t, scope: orgs/x}
+provider: linode
+worker: {swap_mb: -1}
+ssh: {private_key_file: k}
+`)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "worker.swap_mb") {
+		t.Fatalf("expected worker.swap_mb validation error, got %v", err)
 	}
 }
 

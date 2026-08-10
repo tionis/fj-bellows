@@ -61,6 +61,9 @@ type Params struct {
 	AuthorizedKey string
 	// SSHUser receives AuthorizedKey. Defaults to root.
 	SSHUser string
+	// SwapMB creates a guest swapfile of this size before readiness. Zero
+	// leaves swap configuration to the base image.
+	SwapMB int
 
 	// FJBAgentDownloadURL is the fully-resolved URL the worker fetches the
 	// fjbagent binary from. Use ResolveAgentDownloadURL to substitute the

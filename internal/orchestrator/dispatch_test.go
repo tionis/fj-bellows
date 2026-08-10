@@ -140,7 +140,7 @@ func TestHostsOverrideCommand(t *testing.T) {
 		{
 			name: "hostname needs override",
 			in:   forgejoTarget{host: "forgejo.internal", port: 443},
-			want: "grep -qF '127.0.0.1 forgejo.internal' /etc/hosts || echo '127.0.0.1 forgejo.internal' >> /etc/hosts",
+			want: "grep -qF '127.0.0.1 forgejo.internal' /etc/hosts || printf '%s\\n' '127.0.0.1 forgejo.internal' | sudo tee -a /etc/hosts >/dev/null",
 		},
 		{
 			name: "localhost already mapped",
@@ -205,6 +205,18 @@ func TestRunnerConfigYAML(t *testing.T) {
 				t.Errorf("runnerConfigYAML(%+v)\n  got:\n%s\n  want:\n%s", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+func TestRunnerLabelArgsRepeatsFlag(t *testing.T) {
+	labels := []string{
+		"atlas-libvirt-canary:docker://debian:bookworm",
+		"docker:docker://node:20-bookworm",
+	}
+	want := "--label 'atlas-libvirt-canary:docker://debian:bookworm' " +
+		"--label 'docker:docker://node:20-bookworm'"
+	if got := runnerLabelArgs(labels); got != want {
+		t.Fatalf("runnerLabelArgs() = %q, want %q", got, want)
 	}
 }
 

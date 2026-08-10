@@ -124,10 +124,10 @@ func (d *CacheGatewayDispatcher) RunJob(ctx context.Context, _, addr string, reg
 	}
 
 	cmd := fmt.Sprintf(
-		"forgejo-runner one-job --url %s --uuid %s --token-url file:/tmp/tok --label %s --handle %s --wait --config /tmp/runner-cfg.yml",
+		"forgejo-runner one-job --url %s --uuid %s --token-url file:/tmp/tok %s --handle %s --wait --config /tmp/runner-cfg.yml",
 		shellQuote(d.ForgejoURL),
 		shellQuote(reg.UUID),
-		shellQuote(strings.Join(d.Labels, ",")),
+		runnerLabelArgs(d.Labels),
 		shellQuote(job.Handle),
 	)
 	if err := runRemote(ctx, client, cmd, nil); err != nil {
