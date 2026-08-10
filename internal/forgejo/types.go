@@ -44,4 +44,5 @@ type Runner struct {
 	UUID   string `json:"uuid"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	Busy   bool   `json:"busy"`
 }

@@ -72,6 +72,9 @@ type Forgejo struct {
 // Scale bounds the warm pool.
 type Scale struct {
 	Max int `yaml:"max"`
+	// Prewarm keeps this many disposable workers registered with Forgejo and
+	// waiting for one job. Zero preserves queue-driven provisioning.
+	Prewarm int `yaml:"prewarm"`
 }
 
 // Poll controls the reconcile cadence and teardown timers.
@@ -204,6 +207,12 @@ func (c *Config) validate() error {
 	}
 	if c.Worker.SwapMB < 0 {
 		return fmt.Errorf("config: worker.swap_mb must be non-negative, got %d", c.Worker.SwapMB)
+	}
+	if c.Scale.Prewarm < 0 || c.Scale.Prewarm > c.Scale.Max {
+		return fmt.Errorf("config: scale.prewarm must be between 0 and scale.max (%d), got %d", c.Scale.Max, c.Scale.Prewarm)
+	}
+	if c.Scale.Prewarm > 0 && c.WorkerLifecycle != WorkerLifecycleDisposable {
+		return fmt.Errorf("config: scale.prewarm requires worker_lifecycle %q", WorkerLifecycleDisposable)
 	}
 	if err := c.Transport.validate(); err != nil {
 		return fmt.Errorf("config: %w", err)

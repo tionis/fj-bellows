@@ -407,6 +407,7 @@ func (b *controlBackend) ReloadConfig(_ context.Context) ([]string, error) {
 	cur := b.o.CurrentConfig()
 	next := cur
 	next.MaxScale = newCfg.Scale.Max
+	next.Prewarm = newCfg.Scale.Prewarm
 	next.Labels = newCfg.Forgejo.Labels
 	next.WorkerLifecycle = newCfg.WorkerLifecycle
 	next.SSHUser = newCfg.SSH.User
@@ -860,6 +861,7 @@ func buildOrchestratorConfig(cfg *config.Config, opts runOpts, buildVersion, aut
 	return orchestrator.Config{
 		Tag:                 cfg.Tag,
 		MaxScale:            cfg.Scale.Max,
+		Prewarm:             cfg.Scale.Prewarm,
 		Labels:              cfg.Forgejo.Labels,
 		WorkerLifecycle:     cfg.WorkerLifecycle,
 		PollInterval:        cfg.Poll.Interval.D(),

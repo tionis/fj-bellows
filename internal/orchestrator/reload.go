@@ -132,6 +132,9 @@ func hotFieldDiff(a, b Config) []string {
 // values differ between a and b.
 func nonHotFieldDiff(a, b Config) []string {
 	var out []string
+	if a.Prewarm != b.Prewarm {
+		out = append(out, "scale.prewarm")
+	}
 	if a.Tag != b.Tag {
 		out = append(out, "tag")
 	}

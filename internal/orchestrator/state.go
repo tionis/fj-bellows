@@ -13,6 +13,9 @@ const (
 	StateProvisioning NodeState = "provisioning"
 	// StateIdle means the node is ready and warm with no job assigned.
 	StateIdle NodeState = "idle"
+	// StateWaiting means an ephemeral runner is registered and waiting in
+	// Forgejo for its single job.
+	StateWaiting NodeState = "waiting"
 	// StateBusy means a one-job run is in flight.
 	StateBusy NodeState = "busy"
 	// StateDraining means the node is marked for teardown, DELETE not yet issued.
@@ -46,7 +49,8 @@ type Node struct {
 	LastBusy time.Time
 	// CurrentJob is the Forgejo job handle in flight on this node. The
 	// dispatch goroutine sets it on Busy and clears it on the Idle return.
-	// Empty unless State == StateBusy.
+	// Empty unless a queue-directed worker is StateBusy. Pre-warmed runners are
+	// assigned inside Forgejo, so their job handle is intentionally unavailable.
 	CurrentJob string
 }
 

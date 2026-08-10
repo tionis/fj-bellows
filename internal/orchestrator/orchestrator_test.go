@@ -70,6 +70,85 @@ func TestReconcileProvisionsForWaitingJob(t *testing.T) {
 	}
 }
 
+func TestReconcilePrewarmsRunnerWithoutWaitingJob(t *testing.T) {
+	prov := &pmock.Provider{
+		ProvisionFn: func(_ context.Context, _ provider.Spec) (provider.Instance, error) {
+			return provider.Instance{ID: "slot-vm", Address: testIP, CreatedAt: time.Now()}, nil
+		},
+	}
+	jobs := &omock.JobSource{
+		RegisterEphemeralFn: func(_ context.Context, name string, _ []string) (forgejo.Registration, error) {
+			if name != "fj-bellows-slot-1" {
+				t.Errorf("runner name = %q", name)
+			}
+			return forgejo.Registration{UUID: "slot-uuid", Token: "one-shot"}, nil
+		},
+	}
+	runStarted := make(chan forgejo.WaitingJob, 1)
+	disp := &omock.Dispatcher{
+		RunJobFn: func(ctx context.Context, _, _ string, _ forgejo.Registration, job forgejo.WaitingJob) error {
+			runStarted <- job
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	cfg := baseConfig()
+	cfg.WorkerLifecycle = workerLifecycleDisposable
+	cfg.Prewarm = 1
+	o := New(cfg, prov, jobs, disp, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	result := o.Reconcile(ctx)
+	if result.Provisioned != 1 {
+		t.Fatalf("Provisioned = %d, want 1", result.Provisioned)
+	}
+	select {
+	case job := <-runStarted:
+		if job.Handle != "" {
+			t.Fatalf("pre-warmed job handle = %q, want empty", job.Handle)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pre-warmed runner did not start")
+	}
+	waitFor(t, "worker waits as a registered slot", func() bool {
+		return len(o.pool.ByState(StateWaiting)) == 1
+	})
+	cancel()
+	waitFor(t, "cancelled slot is destroyed", func() bool { return prov.DestroyCount() == 1 })
+}
+
+func TestShutdownCancelsIdlePrewarmRunnerButDrainsBusyRunner(t *testing.T) {
+	jobs := &omock.JobSource{
+		ListRunnersFn: func(context.Context) ([]forgejo.Runner, error) {
+			return []forgejo.Runner{
+				{UUID: "idle-uuid", Status: "idle"},
+				{UUID: "busy-uuid", Status: "active"},
+			}, nil
+		},
+	}
+	cfg := baseConfig()
+	cfg.Prewarm = 2
+	o := New(cfg, &pmock.Provider{}, jobs, &omock.Dispatcher{}, nil)
+	idleCtx, cancelIdle := context.WithCancel(context.Background())
+	defer cancelIdle()
+	busyCtx, cancelBusy := context.WithCancel(context.Background())
+	defer cancelBusy()
+	o.slotRuns["idle-vm"] = slotRun{uuid: "idle-uuid", cancel: cancelIdle}
+	o.slotRuns["busy-vm"] = slotRun{uuid: "busy-uuid", cancel: cancelBusy}
+
+	o.cancelIdlePrewarmRunners()
+	select {
+	case <-idleCtx.Done():
+	default:
+		t.Fatal("idle pre-warmed runner was not cancelled")
+	}
+	select {
+	case <-busyCtx.Done():
+		t.Fatal("busy pre-warmed runner must be allowed to drain")
+	default:
+	}
+}
+
 func TestReconcileDispatchesToIdleNode(t *testing.T) {
 	prov := &pmock.Provider{
 		ListFn: func(context.Context, string) ([]provider.Instance, error) {

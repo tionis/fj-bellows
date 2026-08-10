@@ -169,11 +169,11 @@ func (d *SSHDispatcher) RunJob(ctx context.Context, _, addr string, reg forgejo.
 	}
 
 	cmd := fmt.Sprintf(
-		"forgejo-runner one-job --url %s --uuid %s --token-url file:/tmp/tok %s --handle %s --wait --config /tmp/runner-cfg.yml",
+		"forgejo-runner one-job --url %s --uuid %s --token-url file:/tmp/tok %s%s --wait --config /tmp/runner-cfg.yml",
 		shellQuote(d.ForgejoURL),
 		shellQuote(reg.UUID),
 		runnerLabelArgs(d.Labels),
-		shellQuote(job.Handle),
+		runnerHandleArg(job.Handle),
 	)
 	if prep := hostsOverrideCommand(target); prep != "" {
 		cmd = prep + " && " + cmd
@@ -182,6 +182,16 @@ func (d *SSHDispatcher) RunJob(ctx context.Context, _, addr string, reg forgejo.
 		return fmt.Errorf("one-job: %w", err)
 	}
 	return nil
+}
+
+// runnerHandleArg pins queue-driven runners to the job fj-bellows observed.
+// Pre-warmed slots pass an empty handle, allowing Forgejo to assign the next
+// matching job to the already-online ephemeral runner.
+func runnerHandleArg(handle string) string {
+	if handle == "" {
+		return ""
+	}
+	return " --handle " + shellQuote(handle)
 }
 
 // runnerLabelArgs renders the repeatable --label option expected by

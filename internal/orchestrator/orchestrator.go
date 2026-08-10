@@ -42,7 +42,10 @@ type JobSource interface {
 type Config struct {
 	Tag      string
 	MaxScale int
-	Labels   []string
+	// Prewarm keeps this many disposable VMs registered as one-job runners.
+	// Zero retains polling and job-handle-directed dispatch.
+	Prewarm int
+	Labels  []string
 	// WorkerLifecycle is "reusable" (warm pool) or "disposable" (one VM
 	// dispatch attempt, then destroy). Empty preserves reusable behaviour.
 	WorkerLifecycle string
@@ -113,12 +116,15 @@ type Orchestrator struct {
 	// (Reconcile RPC, ForceReap, ForceProvision) ignores this flag — an
 	// operator explicitly asking for a tick gets one. Atomic so Pause/Resume
 	// don't have to serialise behind Run's mutex.
-	paused atomic.Bool
+	paused    atomic.Bool
+	accepting atomic.Bool
 
 	mu          sync.Mutex
 	pending     int                 // in-flight provisions not yet in the pool
 	dispatching map[string]struct{} // job handles currently being served
 	active      map[string]struct{} // runner UUIDs we registered and still expect
+	slots       map[int]string      // stable slot number -> provider instance ID
+	slotRuns    map[string]slotRun  // instance ID -> cancellable waiting runner
 	now         func() time.Time    // injectable clock for tests
 
 	// Freshness timestamps consumed by the control plane's Health endpoint.
@@ -134,6 +140,11 @@ type Orchestrator struct {
 	reapSeen map[string]struct{}
 }
 
+type slotRun struct {
+	uuid   string
+	cancel context.CancelFunc
+}
+
 // New builds an orchestrator.
 func New(cfg Config, prov provider.Provider, jobs JobSource, disp Dispatcher, log *slog.Logger) *Orchestrator {
 	if log == nil {
@@ -142,7 +153,7 @@ func New(cfg Config, prov provider.Provider, jobs JobSource, disp Dispatcher, lo
 	if cfg.ReadyFile == "" {
 		cfg.ReadyFile = bootstrap.DefaultReadyFile
 	}
-	return &Orchestrator{
+	o := &Orchestrator{
 		cfg:         cfg,
 		prov:        prov,
 		jobs:        jobs,
@@ -150,13 +161,17 @@ func New(cfg Config, prov provider.Provider, jobs JobSource, disp Dispatcher, lo
 		pool:        NewPool(),
 		log:         log,
 		events:      events.New(),
-		kick:        make(chan kickReq),
+		kick:        make(chan kickReq, 1),
 		pollReset:   make(chan time.Duration, 1),
 		dispatching: map[string]struct{}{},
 		active:      map[string]struct{}{},
+		slots:       map[int]string{},
+		slotRuns:    map[string]slotRun{},
 		reapSeen:    map[string]struct{}{},
 		now:         time.Now,
 	}
+	o.accepting.Store(true)
+	return o
 }
 
 // Run reconciles on each tick until ctx (the shutdown signal) is cancelled,
@@ -208,6 +223,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 // indefinitely); otherwise it interrupts them immediately. Optionally destroys
 // owned VMs on exit.
 func (o *Orchestrator) shutdown(cancelJobs context.CancelFunc) {
+	o.accepting.Store(false)
+	o.cancelIdlePrewarmRunners()
 	if !o.cfg.DrainOnShutdown {
 		o.log.Info("shutting down; interrupting in-flight jobs")
 		cancelJobs()
@@ -332,7 +349,11 @@ func (o *Orchestrator) Reconcile(ctx context.Context) ReconcileResult {
 	}
 	jobs = filterServiceable(jobs, o.cfg.Labels)
 
-	r.Dispatched, r.Provisioned = o.dispatchJobs(ctx, jobs)
+	if o.cfg.Prewarm > 0 {
+		r.Provisioned = o.maintainPrewarm(ctx)
+	} else {
+		r.Dispatched, r.Provisioned = o.dispatchJobs(ctx, jobs)
+	}
 	r.Reaped = o.applyTeardown(ctx)
 	o.reapZombieRunners(ctx)
 	return r
@@ -550,6 +571,9 @@ func (o *Orchestrator) doForceProvision(ctx context.Context) forceResult {
 		o.pool.SetState(id, StateIdle)
 		o.log.Info("force-provisioned worker ready", "id", id)
 		o.emit("worker_ready", map[string]string{attrID: id, attrIP: ip})
+		if o.cfg.Prewarm > 0 {
+			o.startPrewarmRunner(ctx, Node{InstanceID: id, Address: inst.DialAddress(), PrivateAddress: inst.PrivateDialAddress(), IP: ip})
+		}
 	})
 	return forceResult{instanceID: inst.ID}
 }
@@ -569,7 +593,18 @@ func (o *Orchestrator) reapZombieRunners(ctx context.Context) {
 	prefix := o.cfg.Tag + "-"
 	seen := map[string]struct{}{}
 	for _, r := range runners {
-		if !strings.HasPrefix(r.Name, prefix) || o.isActive(r.UUID) {
+		if id, ok := o.instanceForActiveRunner(r.UUID); ok {
+			if runnerIsBusy(r) {
+				o.pool.SetState(id, StateBusy)
+			} else {
+				o.pool.SetState(id, StateWaiting)
+			}
+			continue
+		}
+		if o.isActive(r.UUID) {
+			continue
+		}
+		if !strings.HasPrefix(r.Name, prefix) {
 			continue
 		}
 		if _, twice := o.reapSeen[r.UUID]; !twice {
@@ -812,7 +847,158 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 		o.pool.SetState(inst.ID, StateIdle)
 		o.log.Info("worker ready", "id", inst.ID)
 		o.emit("worker_ready", map[string]string{attrID: inst.ID, attrIP: inst.DialAddress()})
+		if o.cfg.Prewarm > 0 {
+			o.startPrewarmRunner(ctx, Node{InstanceID: inst.ID, Address: inst.DialAddress(), PrivateAddress: inst.PrivateDialAddress(), IP: inst.DialAddress()})
+		}
 	})
+}
+
+// maintainPrewarm ensures Forgejo continuously sees the configured number of
+// online, one-job ephemeral runners. Forgejo assigns work normally; the
+// orchestrator no longer races the queue by provisioning only after polling it.
+func (o *Orchestrator) maintainPrewarm(ctx context.Context) (provisioned int) {
+	for _, node := range o.pool.ByState(StateIdle) {
+		o.startPrewarmRunner(ctx, node)
+	}
+	active := o.pool.Len() + o.pendingCount()
+	for active < o.cfg.Prewarm && active < o.cfg.MaxScale {
+		o.provisionOne(ctx)
+		active++
+		provisioned++
+	}
+	return provisioned
+}
+
+func (o *Orchestrator) startPrewarmRunner(ctx context.Context, node Node) bool {
+	slot, runCtx, cancel, ok := o.claimSlot(ctx, node.InstanceID)
+	if !ok {
+		return false
+	}
+	if !o.pool.SetState(node.InstanceID, StateWaiting) {
+		o.releaseSlot(slot, node.InstanceID)
+		cancel()
+		return false
+	}
+	o.wg.Go(func() {
+		replenishNow := false
+		defer func() {
+			o.releaseSlot(slot, node.InstanceID)
+			cancel()
+			o.destroyDisposable(node.InstanceID, node.IP)
+			if replenishNow && o.accepting.Load() {
+				o.requestReconcile()
+			}
+		}()
+		name := fmt.Sprintf("%s-slot-%d", o.cfg.Tag, slot)
+		reg, err := o.jobs.RegisterEphemeral(runCtx, name, o.cfg.Labels)
+		if err != nil {
+			o.log.Error("register pre-warmed runner", "slot", slot, "err", err)
+			return
+		}
+		o.setSlotUUID(node.InstanceID, reg.UUID)
+		o.addActive(reg.UUID)
+		defer o.removeActive(reg.UUID)
+		o.log.Info("pre-warmed runner online", "slot", slot, "id", node.InstanceID, "uuid", reg.UUID)
+		o.emit("runner_waiting", map[string]string{attrID: node.InstanceID, attrIP: node.IP, attrRunnerUUID: reg.UUID})
+		if err := o.disp.RunJob(runCtx, node.InstanceID, o.addrFor(&node), reg, forgejo.WaitingJob{}); err != nil {
+			if runCtx.Err() == nil {
+				o.log.Error("pre-warmed runner", "slot", slot, "ip", node.IP, "err", err)
+			}
+			return
+		}
+		replenishNow = true
+		o.log.Info("pre-warmed runner completed one job", "slot", slot, "ip", node.IP)
+	})
+	return true
+}
+
+func (o *Orchestrator) claimSlot(ctx context.Context, instanceID string) (int, context.Context, context.CancelFunc, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for slot := 1; slot <= o.cfg.Prewarm; slot++ {
+		if _, used := o.slots[slot]; used {
+			continue
+		}
+		runCtx, cancel := context.WithCancel(ctx)
+		o.slots[slot] = instanceID
+		o.slotRuns[instanceID] = slotRun{cancel: cancel}
+		return slot, runCtx, cancel, true
+	}
+	return 0, nil, nil, false
+}
+
+func (o *Orchestrator) setSlotUUID(instanceID, uuid string) {
+	o.mu.Lock()
+	run := o.slotRuns[instanceID]
+	run.uuid = uuid
+	o.slotRuns[instanceID] = run
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) instanceForActiveRunner(uuid string) (string, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for instanceID, run := range o.slotRuns {
+		if run.uuid == uuid {
+			return instanceID, true
+		}
+	}
+	return "", false
+}
+
+func (o *Orchestrator) releaseSlot(slot int, instanceID string) {
+	o.mu.Lock()
+	if o.slots[slot] == instanceID {
+		delete(o.slots, slot)
+	}
+	delete(o.slotRuns, instanceID)
+	o.mu.Unlock()
+}
+
+// cancelIdlePrewarmRunners prevents an idle --wait process from blocking a
+// graceful shutdown. Busy runners remain under the ordinary drain policy.
+func (o *Orchestrator) cancelIdlePrewarmRunners() {
+	if o.cfg.Prewarm == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	runners, err := o.jobs.ListRunners(ctx)
+	if err != nil {
+		o.log.Warn("cannot identify idle pre-warmed runners during shutdown", "err", err)
+		return
+	}
+	idle := make(map[string]bool, len(runners))
+	found := make(map[string]bool, len(runners))
+	for _, runner := range runners {
+		idle[runner.UUID] = runnerIsIdle(runner)
+		found[runner.UUID] = true
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, run := range o.slotRuns {
+		if run.uuid == "" || (found[run.uuid] && idle[run.uuid]) {
+			run.cancel()
+		}
+	}
+}
+
+func runnerIsBusy(runner forgejo.Runner) bool {
+	status := strings.ToLower(runner.Status)
+	return runner.Busy || status == "active" || status == "busy" || status == "running"
+}
+
+func runnerIsIdle(runner forgejo.Runner) bool {
+	status := strings.ToLower(runner.Status)
+	return !runner.Busy && (status == "idle" || status == "offline")
+}
+
+func (o *Orchestrator) requestReconcile() {
+	result := make(chan ReconcileResult, 1)
+	select {
+	case o.kick <- kickReq{kind: kickReconcile, reconcile: result}:
+	default:
+	}
 }
 
 // applyTeardown destroys idle nodes the billing policy says are due. Returns

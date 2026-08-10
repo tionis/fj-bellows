@@ -220,6 +220,15 @@ func TestRunnerLabelArgsRepeatsFlag(t *testing.T) {
 	}
 }
 
+func TestRunnerHandleArg(t *testing.T) {
+	if got := runnerHandleArg(""); got != "" {
+		t.Fatalf("empty handle arg = %q, want empty", got)
+	}
+	if got := runnerHandleArg("job token"); got != " --handle 'job token'" {
+		t.Fatalf("handle arg = %q", got)
+	}
+}
+
 func TestPinHostKeyRequiresSeededKeyOnFirstContact(t *testing.T) {
 	keyA := newTestHostKey(t)
 	keyB := newTestHostKey(t)

@@ -92,6 +92,48 @@ ssh: {private_key_file: k}
 	}
 }
 
+func TestLoadPrewarmDisposable(t *testing.T) {
+	path := writeTemp(t, "config.yaml", `
+forgejo: {url: u, token: t, scope: orgs/x}
+provider: linode
+worker_lifecycle: disposable
+scale: {max: 2, prewarm: 2}
+ssh: {private_key_file: k}
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Scale.Prewarm != 2 {
+		t.Fatalf("scale.prewarm = %d, want 2", cfg.Scale.Prewarm)
+	}
+}
+
+func TestLoadRejectsPrewarmForReusableWorkers(t *testing.T) {
+	path := writeTemp(t, "config.yaml", `
+forgejo: {url: u, token: t, scope: orgs/x}
+provider: linode
+scale: {max: 1, prewarm: 1}
+ssh: {private_key_file: k}
+`)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "requires worker_lifecycle") {
+		t.Fatalf("expected prewarm lifecycle validation error, got %v", err)
+	}
+}
+
+func TestLoadRejectsPrewarmAboveMax(t *testing.T) {
+	path := writeTemp(t, "config.yaml", `
+forgejo: {url: u, token: t, scope: orgs/x}
+provider: linode
+worker_lifecycle: disposable
+scale: {max: 1, prewarm: 2}
+ssh: {private_key_file: k}
+`)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "scale.prewarm") {
+		t.Fatalf("expected prewarm range validation error, got %v", err)
+	}
+}
+
 func TestLoadDisposableWorkerLifecycle(t *testing.T) {
 	path := writeTemp(t, "config.yaml", `
 forgejo: {url: u, token: t, scope: orgs/x}

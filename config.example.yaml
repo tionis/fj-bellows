@@ -41,6 +41,9 @@ tag: fj-bellows
 scale:
   # Maximum number of warm worker VMs.
   max: 1
+  # Disposable one-job runners kept registered before jobs arrive. Zero
+  # preserves queue-driven provisioning; must not exceed max.
+  prewarm: 0
 
 # Worker VM reuse policy. "reusable" preserves the warm-pool behaviour;
 # "disposable" destroys a worker after its first dispatch attempt and never

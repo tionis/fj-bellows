@@ -47,13 +47,16 @@ just cheap on one.
 - **Reconcile**: every tick the orchestrator reconciles three sources — waiting
   jobs, registered runners, and provider instances — into one internal view,
   modeling each node as a state machine
-  (Provisioning → Idle → Busy → Draining → Removing).
+  (Provisioning → Idle → Waiting/Busy → Draining → Removing).
 - **Orphan sweep**: every instance is tagged; instances unknown to the
   orchestrator or idle past their paid hour are destroyed, so a crash or a
   failed DELETE never leaks a billed VM.
 - **Disposable VM mode**: `worker_lifecycle: disposable` destroys the worker
   after its first dispatch attempt and reaps unknown tagged workers on restart,
   providing a fresh VM boundary for each untrusted job.
+- **Pre-warmed ephemeral slots**: `scale.prewarm` boots disposable workers and
+  registers stable `TAG-slot-N` runners before work arrives. Forgejo assigns
+  one matching job normally, after which the VM and registration are replaced.
 - **Singleton lock**: an advisory file lock ensures only one daemon makes
   provisioning decisions.
 
