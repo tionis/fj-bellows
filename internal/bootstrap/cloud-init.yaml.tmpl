@@ -1,13 +1,15 @@
 #cloud-config
-# Worker bootstrap for fj-bellows. Installs Docker and the forgejo-runner
-# binary, then signals readiness. It deliberately holds NO Forgejo credentials:
+# Worker bootstrap for fj-bellows. Ensures the worker-specific identity and
+# runtime state, then signals readiness. It deliberately holds NO Forgejo credentials:
 # the orchestrator registers an ephemeral runner per job and delivers the
 # one-shot token over SSH at dispatch time.
+{{- if not .PreparedImage}}
 package_update: true
 packages:
   - docker.io
   - curl
   - ca-certificates
+{{- end}}
 {{- if .FJBAgentDownloadURL}}
 # fjbagent (FJB-94) — runs as the unprivileged `fjb` system user. The token
 # below is the per-deployment shared secret; the orchestrator presents it on
@@ -99,6 +101,7 @@ runcmd:
     printf 'HostKey /etc/ssh/ssh_host_ed25519_key\n' > /etc/ssh/sshd_config.d/10-fj-bellows-hostkey.conf
     systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || systemctl restart ssh
 {{- end}}
+{{- if not .PreparedImage}}
   - |
     set -eu
     arch="$(uname -m)"
@@ -110,6 +113,7 @@ runcmd:
     url="https://code.forgejo.org/forgejo/runner/releases/download/v{{.RunnerVersion}}/forgejo-runner-{{.RunnerVersion}}-linux-${rarch}"
     curl -fsSL -o /usr/local/bin/forgejo-runner "$url"
     chmod +x /usr/local/bin/forgejo-runner
+{{- end}}
 {{- if .FJBAgentDownloadURL}}
   - |
     set -eu

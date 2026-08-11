@@ -153,21 +153,24 @@ func TestPrewarmRegistrationFailureEmitsFailureEvent(t *testing.T) {
 func TestShutdownCancelsIdlePrewarmRunnerButDrainsBusyRunner(t *testing.T) {
 	jobs := &omock.JobSource{
 		ListRunnersFn: func(context.Context) ([]forgejo.Runner, error) {
-			return []forgejo.Runner{
-				{UUID: "idle-uuid", Status: "idle"},
-				{UUID: "busy-uuid", Status: "active"},
-			}, nil
+			return []forgejo.Runner{{UUID: "race-uuid", Status: "active"}}, nil
 		},
 	}
 	cfg := baseConfig()
-	cfg.Prewarm = 2
+	cfg.Prewarm = 3
 	o := New(cfg, &pmock.Provider{}, jobs, &omock.Dispatcher{}, nil)
 	idleCtx, cancelIdle := context.WithCancel(context.Background())
 	defer cancelIdle()
 	busyCtx, cancelBusy := context.WithCancel(context.Background())
 	defer cancelBusy()
+	raceCtx, cancelRace := context.WithCancel(context.Background())
+	defer cancelRace()
 	o.slotRuns["idle-vm"] = slotRun{uuid: "idle-uuid", cancel: cancelIdle}
 	o.slotRuns["busy-vm"] = slotRun{uuid: "busy-uuid", cancel: cancelBusy}
+	o.slotRuns["race-vm"] = slotRun{uuid: "race-uuid", cancel: cancelRace}
+	o.pool.Put(&Node{InstanceID: "idle-vm", State: StateWaiting})
+	o.pool.Put(&Node{InstanceID: "busy-vm", State: StateBusy})
+	o.pool.Put(&Node{InstanceID: "race-vm", State: StateWaiting})
 
 	o.cancelIdlePrewarmRunners()
 	select {
@@ -179,6 +182,103 @@ func TestShutdownCancelsIdlePrewarmRunnerButDrainsBusyRunner(t *testing.T) {
 	case <-busyCtx.Done():
 		t.Fatal("busy pre-warmed runner must be allowed to drain")
 	default:
+	}
+	select {
+	case <-raceCtx.Done():
+		t.Fatal("runner reported busy by Forgejo must be allowed to drain")
+	default:
+	}
+}
+
+func TestRunShutdownCancelsOnlinePrewarmRunner(t *testing.T) {
+	prov := &pmock.Provider{
+		ProvisionFn: func(context.Context, provider.Spec) (provider.Instance, error) {
+			return provider.Instance{ID: "slot-vm", Address: testIP, CreatedAt: time.Now()}, nil
+		},
+	}
+	jobs := &omock.JobSource{
+		RegisterEphemeralFn: func(context.Context, string, []string) (forgejo.Registration, error) {
+			return forgejo.Registration{UUID: "online-uuid", Token: "one-shot"}, nil
+		},
+		// Forgejo may omit an ephemeral registration while its --wait process
+		// is still alive. Local StateWaiting must still make shutdown cancel it.
+		ListRunnersFn: func(context.Context) ([]forgejo.Runner, error) { return nil, nil },
+	}
+	runnerStarted := make(chan struct{})
+	var startedOnce sync.Once
+	disp := &omock.Dispatcher{
+		RunJobFn: func(ctx context.Context, _, _ string, _ forgejo.Registration, _ forgejo.WaitingJob) error {
+			startedOnce.Do(func() { close(runnerStarted) })
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	cfg := baseConfig()
+	cfg.WorkerLifecycle = workerLifecycleDisposable
+	cfg.Prewarm = 1
+	cfg.DrainOnShutdown = true
+	cfg.DrainTimeout = time.Second
+	o := New(cfg, prov, jobs, disp, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() { _ = o.Run(ctx); close(runDone) }()
+	select {
+	case <-runnerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pre-warmed runner did not start")
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("online non-busy pre-warmed runner blocked graceful shutdown")
+	}
+	if prov.DestroyCount() != 1 {
+		t.Fatalf("DestroyCount = %d, want 1", prov.DestroyCount())
+	}
+}
+
+func TestRunShutdownCancelsProvisioningWorkerWhileDraining(t *testing.T) {
+	prov := &pmock.Provider{
+		ProvisionFn: func(context.Context, provider.Spec) (provider.Instance, error) {
+			return provider.Instance{ID: "booting-vm", Address: testIP, CreatedAt: time.Now()}, nil
+		},
+	}
+	readyStarted := make(chan struct{})
+	var readyOnce sync.Once
+	disp := &omock.Dispatcher{
+		WaitReadyFn: func(ctx context.Context, _, _ string) error {
+			readyOnce.Do(func() { close(readyStarted) })
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	cfg := baseConfig()
+	cfg.WorkerLifecycle = workerLifecycleDisposable
+	cfg.Prewarm = 1
+	cfg.DrainOnShutdown = true
+	cfg.DrainTimeout = time.Minute
+	o := New(cfg, prov, &omock.JobSource{}, disp, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan struct{})
+	go func() { _ = o.Run(ctx); close(runDone) }()
+	select {
+	case <-readyStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not enter readiness")
+	}
+
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("provisioning worker blocked graceful shutdown")
+	}
+	if prov.DestroyCount() != 1 {
+		t.Fatalf("DestroyCount = %d, want 1", prov.DestroyCount())
 	}
 }
 

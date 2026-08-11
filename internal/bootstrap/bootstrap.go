@@ -64,6 +64,9 @@ type Params struct {
 	// SwapMB creates a guest swapfile of this size before readiness. Zero
 	// leaves swap configuration to the base image.
 	SwapMB int
+	// PreparedImage declares that Docker, curl, CA certificates, and the
+	// requested forgejo-runner version are already installed in the base image.
+	PreparedImage bool
 
 	// FJBAgentDownloadURL is the fully-resolved URL the worker fetches the
 	// fjbagent binary from. Use ResolveAgentDownloadURL to substitute the

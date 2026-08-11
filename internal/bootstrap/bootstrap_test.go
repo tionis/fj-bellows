@@ -65,6 +65,23 @@ func TestRenderWithoutWorkerSwap(t *testing.T) {
 	}
 }
 
+func TestRenderPreparedImageSkipsImmutableInstallWork(t *testing.T) {
+	out, err := Render(Params{RunnerVersion: testRunnerVersion, PreparedImage: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unwanted := range []string{"package_update:", "packages:", "code.forgejo.org/forgejo/runner/releases"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("prepared image bootstrap contains %q:\n%s", unwanted, out)
+		}
+	}
+	for _, want := range []string{"systemctl enable --now docker", DefaultReadyFile} {
+		if !strings.Contains(out, want) {
+			t.Errorf("prepared image bootstrap missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestRenderAuthorizedKey(t *testing.T) {
 	out, err := Render(Params{
 		RunnerVersion: testRunnerVersion,

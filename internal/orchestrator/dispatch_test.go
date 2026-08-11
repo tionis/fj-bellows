@@ -1,14 +1,42 @@
 package orchestrator
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"net"
 	"strconv"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
+
+func TestWaitRemoteCommandCancellationDoesNotWaitForTransportClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	closeStarted := make(chan struct{})
+	releaseClose := make(chan struct{})
+	defer close(releaseClose)
+
+	started := time.Now()
+	_, err := waitRemoteCommand(ctx, func() {
+		close(closeStarted)
+		<-releaseClose
+	}, make(chan remoteCommandResult))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitRemoteCommand error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("cancellation waited %s for transport close", elapsed)
+	}
+	select {
+	case <-closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("transport close was not initiated")
+	}
+}
 
 func TestShellQuote(t *testing.T) {
 	cases := map[string]string{

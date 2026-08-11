@@ -50,6 +50,9 @@ type Worker struct {
 	// SwapMB creates and enables a guest swapfile before the worker readiness
 	// sentinel is written. Zero disables swap creation.
 	SwapMB int `yaml:"swap_mb"`
+	// PreparedImage skips package and forgejo-runner installation in cloud-init.
+	// The selected provider image must already contain those dependencies.
+	PreparedImage bool `yaml:"prepared_image"`
 }
 
 // Forgejo describes how to reach the Forgejo Actions API.

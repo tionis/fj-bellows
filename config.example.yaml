@@ -50,6 +50,11 @@ scale:
 # adopts unknown workers as reusable after a daemon restart.
 worker_lifecycle: reusable
 
+# Set this only when the selected provider image already contains Docker,
+# curl, CA certificates, and the configured forgejo-runner release.
+worker:
+  prepared_image: false
+
 # Selected in-tree provider.
 provider: linode
 
@@ -159,6 +164,34 @@ provider_config:
 #   cores: 2
 #   memory_mb: 4096
 #   disk_size: 32G
+
+# === Firecracker microVM alternative ===
+# provider: firecracker
+# provider_config:
+#   firecracker_bin: /usr/local/bin/firecracker
+#   jailer_bin: /usr/local/bin/jailer
+#   jailer_base_dir: /srv/fj-bellows/firecracker/jailer
+#   jailer_cgroup_version: 2
+#   cloud_localds_bin: /usr/bin/cloud-localds
+#   kernel_image: /srv/fj-bellows/firecracker/base/kernel
+#   initrd_image: /srv/fj-bellows/firecracker/base/initrd.img
+#   base_rootfs: /srv/fj-bellows/firecracker/base/rootfs.raw
+#   state_dir: /srv/fj-bellows/firecracker/instances
+#   network_slots:
+#     - tap_device: tap-fjb0
+#       guest_address: 192.0.2.10
+#       guest_mac: "02:fc:00:00:00:10"
+#       jailer_user: fj-bellows-fc0
+#       jailer_group: fj-bellows-fc0
+#     - tap_device: tap-fjb1
+#       guest_address: 192.0.2.11
+#       guest_mac: "02:fc:00:00:00:11"
+#       jailer_user: fj-bellows-fc1
+#       jailer_group: fj-bellows-fc1
+#   vcpu_count: 2
+#   memory_mb: 4096
+#   # The root device is a flat filesystem image, not a partitioned boot disk.
+#   boot_args: console=ttyS0 reboot=k panic=1 root=/dev/vda rw pci=off
 
 poll:
   # How often to reconcile the queue against runners and instances.

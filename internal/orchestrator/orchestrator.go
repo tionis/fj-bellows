@@ -56,6 +56,7 @@ type Config struct {
 	AuthorizedKey   string
 	SSHUser         string
 	SwapMB          int
+	PreparedImage   bool
 
 	// FJBAgentDownloadURL is the fully-resolved URL workers fetch fjbagent
 	// from in cloud-init (FJB-94). The agent version implicitly tracks
@@ -120,12 +121,13 @@ type Orchestrator struct {
 	accepting atomic.Bool
 
 	mu          sync.Mutex
-	pending     int                 // in-flight provisions not yet in the pool
-	dispatching map[string]struct{} // job handles currently being served
-	active      map[string]struct{} // runner UUIDs we registered and still expect
-	slots       map[int]string      // stable slot number -> provider instance ID
-	slotRuns    map[string]slotRun  // instance ID -> cancellable waiting runner
-	now         func() time.Time    // injectable clock for tests
+	pending     int                           // in-flight provisions not yet in the pool
+	dispatching map[string]struct{}           // job handles currently being served
+	active      map[string]struct{}           // runner UUIDs we registered and still expect
+	slots       map[int]string                // stable slot number -> provider instance ID
+	slotRuns    map[string]slotRun            // instance ID -> cancellable waiting runner
+	provisions  map[string]context.CancelFunc // worker name -> cancellable provision/readiness path
+	now         func() time.Time              // injectable clock for tests
 
 	// Freshness timestamps consumed by the control plane's Health endpoint.
 	// Each is bumped under mu on success of the corresponding upstream call.
@@ -167,6 +169,7 @@ func New(cfg Config, prov provider.Provider, jobs JobSource, disp Dispatcher, lo
 		active:      map[string]struct{}{},
 		slots:       map[int]string{},
 		slotRuns:    map[string]slotRun{},
+		provisions:  map[string]context.CancelFunc{},
 		reapSeen:    map[string]struct{}{},
 		now:         time.Now,
 	}
@@ -224,6 +227,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 // owned VMs on exit.
 func (o *Orchestrator) shutdown(cancelJobs context.CancelFunc) {
 	o.accepting.Store(false)
+	o.cancelProvisioningWorkers()
 	o.cancelIdlePrewarmRunners()
 	if !o.cfg.DrainOnShutdown {
 		o.log.Info("shutting down; interrupting in-flight jobs")
@@ -520,6 +524,7 @@ func (o *Orchestrator) doForceProvision(ctx context.Context) forceResult {
 		AuthorizedKey:       o.cfg.AuthorizedKey,
 		SSHUser:             o.cfg.SSHUser,
 		SwapMB:              o.cfg.SwapMB,
+		PreparedImage:       o.cfg.PreparedImage,
 		FJBAgentDownloadURL: o.cfg.FJBAgentDownloadURL,
 		FJBAgentToken:       o.cfg.FJBAgentToken,
 	})
@@ -778,7 +783,18 @@ func (o *Orchestrator) dispatch(ctx context.Context, node Node, job forgejo.Wait
 // reconciles do not over-provision.
 func (o *Orchestrator) provisionOne(ctx context.Context) {
 	o.incPending()
+	name := o.cfg.Tag + "-" + shortID()
+	provisionCtx, cancelProvision := context.WithCancel(ctx)
+	o.mu.Lock()
+	o.provisions[name] = cancelProvision
+	o.mu.Unlock()
 	o.wg.Go(func() {
+		defer func() {
+			cancelProvision()
+			o.mu.Lock()
+			delete(o.provisions, name)
+			o.mu.Unlock()
+		}()
 		// When the dispatcher can pre-pin host keys, generate a fresh ed25519 SSH
 		// host key per VM and inject its private half via cloud-init so the worker
 		// presents exactly this key; the public half is pinned after Provision so
@@ -803,6 +819,7 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 			AuthorizedKey:       o.cfg.AuthorizedKey,
 			SSHUser:             o.cfg.SSHUser,
 			SwapMB:              o.cfg.SwapMB,
+			PreparedImage:       o.cfg.PreparedImage,
 			FJBAgentDownloadURL: o.cfg.FJBAgentDownloadURL,
 			FJBAgentToken:       o.cfg.FJBAgentToken,
 		})
@@ -813,12 +830,12 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 		}
 		spec := provider.Spec{
 			Tag:           o.cfg.Tag,
-			Name:          o.cfg.Tag + "-" + shortID(),
+			Name:          name,
 			UserData:      userData,
 			AuthorizedKey: o.cfg.AuthorizedKey,
 			Labels:        o.cfg.Labels,
 		}
-		inst, err := o.prov.Provision(ctx, spec)
+		inst, err := o.prov.Provision(provisionCtx, spec)
 		if err != nil {
 			o.log.Error("provision", "err", err)
 			o.emit("worker_provision_failed", nil)
@@ -844,7 +861,7 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 			pinner.PinHostKey(inst.DialAddress(), sshHostPub)
 		}
 
-		if err := o.disp.WaitReady(ctx, inst.ID, o.addrForInstance(inst)); err != nil {
+		if err := o.disp.WaitReady(provisionCtx, inst.ID, o.addrForInstance(inst)); err != nil {
 			o.log.Error("worker readiness", "id", inst.ID, "err", err)
 			o.emit("worker_readiness_failed", map[string]string{attrID: inst.ID, attrIP: inst.DialAddress()})
 			if o.disposableWorkers() {
@@ -859,6 +876,18 @@ func (o *Orchestrator) provisionOne(ctx context.Context) {
 			o.startPrewarmRunner(ctx, Node{InstanceID: inst.ID, Address: inst.DialAddress(), PrivateAddress: inst.PrivateDialAddress(), IP: inst.DialAddress()})
 		}
 	})
+}
+
+// cancelProvisioningWorkers stops VM creation and readiness checks that have
+// not reached an assignable runner. No Forgejo job can be executing in this
+// phase, so these paths must not participate in graceful job draining.
+func (o *Orchestrator) cancelProvisioningWorkers() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for name, cancel := range o.provisions {
+		o.log.Info("cancelling provisioning worker for shutdown", "name", name)
+		cancel()
+	}
 }
 
 // maintainPrewarm ensures Forgejo continuously sees the configured number of
@@ -973,21 +1002,29 @@ func (o *Orchestrator) cancelIdlePrewarmRunners() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	busy := make(map[string]bool)
 	runners, err := o.jobs.ListRunners(ctx)
 	if err != nil {
-		o.log.Warn("cannot identify idle pre-warmed runners during shutdown", "err", err)
-		return
+		o.log.Warn("cannot refresh pre-warmed runner activity during shutdown; using local state", "err", err)
+	} else {
+		for _, runner := range runners {
+			busy[runner.UUID] = runnerIsBusy(runner)
+		}
 	}
-	idle := make(map[string]bool, len(runners))
-	found := make(map[string]bool, len(runners))
-	for _, runner := range runners {
-		idle[runner.UUID] = runnerIsIdle(runner)
-		found[runner.UUID] = true
+	states := make(map[string]NodeState)
+	for _, node := range o.pool.Snapshot() {
+		states[node.InstanceID] = node.State
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	for _, run := range o.slotRuns {
-		if run.uuid == "" || (found[run.uuid] && idle[run.uuid]) {
+	for instanceID, run := range o.slotRuns {
+		// A registration that is not yet visible in Forgejo, or one that
+		// Forgejo has already removed, must not make an idle --wait process
+		// block shutdown. Preserve only work known busy locally or explicitly
+		// reported busy by Forgejo, which closes the assignment-vs-shutdown
+		// race between reconcile ticks.
+		if states[instanceID] != StateBusy && !busy[run.uuid] {
+			o.log.Info("cancelling idle pre-warmed runner for shutdown", "id", instanceID, "uuid", run.uuid)
 			run.cancel()
 		}
 	}
@@ -996,11 +1033,6 @@ func (o *Orchestrator) cancelIdlePrewarmRunners() {
 func runnerIsBusy(runner forgejo.Runner) bool {
 	status := strings.ToLower(runner.Status)
 	return runner.Busy || status == "active" || status == "busy" || status == "running"
-}
-
-func runnerIsIdle(runner forgejo.Runner) bool {
-	status := strings.ToLower(runner.Status)
-	return !runner.Busy && (status == "idle" || status == "offline")
 }
 
 func (o *Orchestrator) requestReconcile() {

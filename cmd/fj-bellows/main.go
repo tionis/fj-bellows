@@ -34,6 +34,7 @@ import (
 
 	// Register in-tree providers.
 	dockerprov "github.com/hstern/fj-bellows/internal/provider/docker"
+	_ "github.com/hstern/fj-bellows/internal/provider/firecracker"
 	_ "github.com/hstern/fj-bellows/internal/provider/libvirt"
 	linodeprov "github.com/hstern/fj-bellows/internal/provider/linode"
 	_ "github.com/hstern/fj-bellows/internal/provider/proxmox"
@@ -870,6 +871,7 @@ func buildOrchestratorConfig(cfg *config.Config, opts runOpts, buildVersion, aut
 		AuthorizedKey:       authKey,
 		SSHUser:             cfg.SSH.User,
 		SwapMB:              cfg.Worker.SwapMB,
+		PreparedImage:       cfg.Worker.PreparedImage,
 		TransportMode:       cfg.Transport.Mode,
 		FJBAgentDownloadURL: fjbAgentURL,
 		FJBAgentToken:       fjbAgentToken,

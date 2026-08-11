@@ -359,35 +359,55 @@ func (d *SSHDispatcher) dial(ctx context.Context, ip string) (*ssh.Client, error
 	return ssh.NewClient(c, chans, reqs), nil
 }
 
+type remoteCommandResult struct {
+	out []byte
+	err error
+}
+
+func waitRemoteCommand(
+	ctx context.Context,
+	closeTransport func(),
+	result <-chan remoteCommandResult,
+) (remoteCommandResult, error) {
+	select {
+	case <-ctx.Done():
+		go closeTransport()
+		return remoteCommandResult{}, ctx.Err()
+	case got := <-result:
+		return got, nil
+	}
+}
+
 func runRemote(ctx context.Context, client *ssh.Client, cmd string, stdin io.Reader) error {
 	sess, err := client.NewSession()
 	if err != nil {
 		return err
 	}
-	defer func() { _ = sess.Close() }()
 	if stdin != nil {
 		sess.Stdin = stdin
 	}
-	// Closing the session unblocks CombinedOutput, so a cancelled context
-	// interrupts even a long-running `one-job --wait` instead of leaking the
-	// dispatch goroutine. The watcher exits via done when the command returns.
-	done := make(chan struct{})
-	defer close(done)
+	result := make(chan remoteCommandResult, 1)
 	go func() {
-		select {
-		case <-ctx.Done():
-			_ = sess.Close()
-		case <-done:
-		}
+		out, runErr := sess.CombinedOutput(cmd)
+		result <- remoteCommandResult{out: out, err: runErr}
 	}()
-	out, err := sess.CombinedOutput(cmd)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	// Neither Session.Close nor Client.Close is guaranteed to wait only a
+	// bounded amount of time for a misbehaving remote command. On cancellation,
+	// initiate transport teardown asynchronously and return immediately; the
+	// buffered result channel lets CombinedOutput finish later without blocking
+	// its sender.
+	got, waitErr := waitRemoteCommand(ctx, func() { _ = client.Close() }, result)
+	if waitErr != nil {
+		return waitErr
 	}
-	return nil
+	_ = sess.Close()
+	if got.err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return fmt.Errorf("%w: %s", got.err, strings.TrimSpace(string(got.out)))
 }
 
 // shellQuote single-quotes a string for safe use in a remote shell command.

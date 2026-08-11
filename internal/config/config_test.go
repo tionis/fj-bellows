@@ -40,6 +40,7 @@ ssh:
   private_key_file: /tmp/id
 worker:
   swap_mb: 4096
+  prepared_image: true
 `)
 	cfg, err := Load(path)
 	if err != nil {
@@ -65,6 +66,9 @@ worker:
 	}
 	if cfg.Worker.SwapMB != 4096 {
 		t.Errorf("worker swap = %d MiB", cfg.Worker.SwapMB)
+	}
+	if !cfg.Worker.PreparedImage {
+		t.Error("worker prepared_image = false, want true")
 	}
 
 	// provider_config must survive as a decodable node, opaque to core.

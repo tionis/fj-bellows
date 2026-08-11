@@ -63,6 +63,14 @@ indefinitely); otherwise it cancels the job context to interrupt them. With
 VMs for a restarted daemon to readopt. In-flight goroutines are tracked with a
 `WaitGroup` (`wg.Go`).
 
+Idle prewarmed `one-job --wait` runners are cancelled before the drain wait.
+Provisioning and readiness workers have their own cancellation contexts and are
+also cancelled before draining; they have not received a job and must never
+turn a routine restart into a boot/readiness-timeout wait.
+Locally busy workers and runners explicitly reported busy by Forgejo retain the
+ordinary drain behavior. Cancellation returns independently of the SSH close
+handshake so an idle remote command cannot hold shutdown until `DrainTimeout`.
+
 ## Dispatch (`dispatch.go`)
 
 `Dispatcher` is an interface so the orchestrator is unit-testable without real
